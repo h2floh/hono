@@ -25,18 +25,52 @@ title = "Release Notes"
   the HTTP and MQTT adapters by setting the *hono-ttl* property in requests explicitly. Please refer to the
   [HTTP Adapter]({{% doclink "/user-guide/http-adapter/#publish-an-event-authenticated-device" %}})
   and [MQTT Adapter] ({{% doclink "/user-guide/mqtt-adapter/#publishing-events" %}}) for details.
+* The device registry HTTP management API now properly implements *cross-origin resource sharing (CORS)* support,
+  by allowing the service to be exposed to configured domains (by default, it's exposed to all domains).
+* The `org.eclipse.hono.util.MessageHelper` now provides convenience factory methods for creating
+  new downstream messages from basic properties.
+  `org.eclipse.hono.service.AbstractProtocolAdapterbase` has been adapted to delegate to these
+  new factory methods.
+* Hono's protocol adapters can now use multiple trusted certificate authorities per tenant to authenticate
+  devices based on client certificates. The list of trusted certificate authorities can be managed at the
+  tenant level using the Device Registry Management API.
+* Authenticated gateway devices can now subscribe to commands for specific devices. Before, gateways
+  could only subscribe to commands directed at any of the devices that the gateway has acted on behalf of.
+  With the new feature of also being able to subscribe to commands for specific devices, northbound
+  applications will get notified of such a subscription along with the specific device id.
+* Now a *max-ttd* value, which is used as an upper boundary for the *hono-ttd* value specified by the devices,
+  can be set as an *extension* property in the adapters section of the tenant configuration.  
 
 ### API Changes
 
 * The already deprecated *legacy metrics* support has been removed.
 * The already deprecated *legacy device registry* and the corresponding base classes, which had been deprecated 
  as well, have been removed.
+* The topic filters used by MQTT devices to subscribe to commands has been changed slightly
+  to better fit the addressing scheme used by the other protocol adapters.
+  The existing topic filters have been deprecated but are still supported.
+  Please refer to the [MQTT adapter user guide]({{% doclink "/user-guide/mqtt-adapter/#command-control" %}})
+  for details.
+* The interface `ResourceLimitChecks` and its implementation classes have been moved to
+  package `org.eclipse.hono.service.resourcelimits` from `org.eclipse.hono.service.plan`.
+  Also the configuration parameters for the resource limits were renamed from `hono.plan`
+  to `hono.resourceLimits`. Please refer to the protocol adapter [configuration guides]
+  ({{% doclink "/admin-guide/" %}}) for more information.
+* The response payload of the *get Tenant* operation of the Tenant API has been changed to contain
+  a list of trusted certificate authorities instead of just a single one. This way, protocol
+  adapters can now authenticate devices based on client certificates signed by one of multiple
+  different trusted root authorities defined for a tenant.
+  All standard protocol adapters have been adapted to this change.
+  The *Tenant* JSON schema object used in the tenant related resources of the Device Registry Management API
+  has also been adapted to contain a list of trusted authorities instead of a single one.
 
 ### Deprecations
 
-* The OpenShift specific source-to-image deployoment model has been removed in
+* The OpenShift specific source-to-image deployment model has been removed in
   favor of the Helm charts and the Eclipse IoT Packages project. You can still
-  deploy Hono on OpenShift using the Helm charts. 
+  deploy Hono on OpenShift using the Helm charts.
+* Defining password secrets with user provided password hash, function and salt is deprecated in the device registry management
+  API and will be removed in the upcoming versions. You should use `pwd-plain` property only going forward.
 
 ## 1.0-M7
 

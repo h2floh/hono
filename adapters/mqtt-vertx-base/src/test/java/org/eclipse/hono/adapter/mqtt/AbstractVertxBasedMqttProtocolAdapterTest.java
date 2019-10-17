@@ -13,9 +13,6 @@
 
 package org.eclipse.hono.adapter.mqtt;
 
-import static io.netty.handler.codec.mqtt.MqttConnectReturnCode.CONNECTION_REFUSED_NOT_AUTHORIZED;
-import static io.netty.handler.codec.mqtt.MqttConnectReturnCode.CONNECTION_REFUSED_SERVER_UNAVAILABLE;
-import static java.net.HttpURLConnection.HTTP_NOT_FOUND;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
@@ -60,12 +57,13 @@ import org.eclipse.hono.service.auth.device.AuthHandler;
 import org.eclipse.hono.service.http.HttpUtils;
 import org.eclipse.hono.service.metric.MetricsTags;
 import org.eclipse.hono.service.metric.MetricsTags.EndpointType;
-import org.eclipse.hono.service.plan.ResourceLimitChecks;
+import org.eclipse.hono.service.resourcelimits.ResourceLimitChecks;
 import org.eclipse.hono.service.tenant.ExecutionContextTenantAndAuthIdProvider;
 import org.eclipse.hono.util.CommandConstants;
 import org.eclipse.hono.util.EventConstants;
 import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.ResourceIdentifier;
+import org.eclipse.hono.util.ResourceLimits;
 import org.eclipse.hono.util.TelemetryConstants;
 import org.eclipse.hono.util.TenantConstants;
 import org.eclipse.hono.util.TenantObject;
@@ -320,7 +318,7 @@ public class AbstractVertxBasedMqttProtocolAdapterTest {
         adapter.handleEndpointConnection(endpoint);
 
         // THEN the connection is not established
-        verify(endpoint).reject(CONNECTION_REFUSED_NOT_AUTHORIZED);
+        verify(endpoint).reject(MqttConnectReturnCode.CONNECTION_REFUSED_NOT_AUTHORIZED);
     }
 
     /**
@@ -400,7 +398,7 @@ public class AbstractVertxBasedMqttProtocolAdapterTest {
         adapter.handleEndpointConnection(endpoint);
 
         // THEN the connection is not established
-        verify(endpoint).reject(CONNECTION_REFUSED_SERVER_UNAVAILABLE);
+        verify(endpoint).reject(MqttConnectReturnCode.CONNECTION_REFUSED_SERVER_UNAVAILABLE);
     }
 
     /**
@@ -444,7 +442,7 @@ public class AbstractVertxBasedMqttProtocolAdapterTest {
         // but for which no registration information is available
         when(regClient.assertRegistration(eq("9999"), (String) any(), (SpanContext) any()))
                 .thenReturn(Future.failedFuture(new ClientErrorException(
-                        HTTP_NOT_FOUND, "device unknown or disabled")));
+                        HttpURLConnection.HTTP_NOT_FOUND, "device unknown or disabled")));
 
         // WHEN a device tries to connect with valid credentials
         final MqttEndpoint endpoint = getMqttEndpointAuthenticated();
@@ -580,7 +578,7 @@ public class AbstractVertxBasedMqttProtocolAdapterTest {
 
         // WHEN an unknown device publishes a telemetry message
         when(regClient.assertRegistration(eq("unknown"), any(), any())).thenReturn(
-                Future.failedFuture(new ClientErrorException(HTTP_NOT_FOUND)));
+                Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_NOT_FOUND)));
         final DownstreamSender sender = givenAQoS0TelemetrySender();
 
         final MqttEndpoint endpoint = mockEndpoint();
@@ -1286,8 +1284,7 @@ public class AbstractVertxBasedMqttProtocolAdapterTest {
     public void verifyEventMessageLimitsTtlToMaxValue(final TestContext ctx) {
         // Given the maximum ttl as 10 seconds for the given tenant.
         final TenantObject myTenantConfig = TenantObject.from("tenant", true)
-                .setResourceLimits(new JsonObject()
-                        .put(TenantConstants.FIELD_MAX_TTL, 10));
+                .setResourceLimits(new ResourceLimits().setMaxTtl(10L));
         when(tenantClient.get(eq("tenant"), (SpanContext) any())).thenReturn(Future.succeededFuture(myTenantConfig));
         // Given an adapter
         final AbstractVertxBasedMqttProtocolAdapter<MqttProtocolAdapterProperties> adapter = getAdapter(

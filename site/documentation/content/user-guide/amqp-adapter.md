@@ -12,7 +12,7 @@ By default, all Hono protocol adapters require clients (devices or gateway compo
 
 In this guide, we will give examples for publishing telemetry and events for *authenticated* (using SASL PLAIN) and *unauthenticated* clients. 
 
-NB: The AMQP adapter can be configured to *allow* unauthenticated devices to connect by setting configuration variable `HONO_AMQP_AUTHENTICATION_REQUIRED` to `false`.
+**NB** The AMQP adapter can be configured to *allow* unauthenticated devices to connect by setting configuration variable `HONO_AMQP_AUTHENTICATION_REQUIRED` to `false`.
 
 ### SASL PLAIN Authentication
 
@@ -34,7 +34,7 @@ When a device uses a client certificate for authentication, the TLS handshake is
 * Adapter validates the device’s client certificate using the registered trust anchor for the tenant.
 * Finally, adapter authenticates the client certificate using Hono's credentials API. In this step, the adapter uses the client certificate’s *Subject DN* (as authentication identifier) and `x509-cert` (for the credentials type) in order to determine the device ID.
 
-NB: The AMQP adapter needs to be configured for TLS in order to support this mechanism.
+**NB** The AMQP adapter needs to be configured for TLS in order to support this mechanism.
 
 ## Connection Limits
 
@@ -45,11 +45,15 @@ After verifying the credentials, the number of existing connections is checked a
 Before accepting any telemetry or event or command messages, the AMQP adapter verifies that the configured [message limit] ({{< relref "/concepts/resource-limits.md" >}}) is not exceeded. The incoming message is discarded if the limit is exceeded. 
 
 ## Connection Event
+
 The AMQP Adapter can send a [Connection Event]({{< relref "/api/event#connection-event" >}}) once the connection with a device has been successfully established or ended. Note that this requires the [`HONO_CONNECTION_EVENTS_PRODUCER`]({{< relref "/admin-guide/mqtt-adapter-config#service-configuration" >}}) configuration property to be explicitly set to `events`.
 
 ## Link Establishment
 
-Clients can publish all types of messages to the AMQP adapter via a single *anonymous* sender link. Using *AT MOST ONCE* delivery semantics, the client will not wait for the message to be accepted and settled by the downstream consumer. However, with *AT LEAST ONCE*, the client sends the message and waits for the message to be delivered to and accepted by the downstream consumer. If the message cannot be delivered due to a failure, the client will be notified.
+The AMQP adapter supports the [Anonymous Terminus for Message Routing](http://docs.oasis-open.org/amqp/anonterm/v1.0/anonterm-v1.0.html) specification
+and requires clients to create a single sender link using the `null` target address for publishing all types of messages to the AMQP adapter.
+
+Using *AT MOST ONCE* delivery semantics, the client will not wait for the message to be accepted and settled by the downstream consumer. However, with *AT LEAST ONCE*, the client sends the message and waits for the message to be delivered to and accepted by the downstream consumer. If the message cannot be delivered due to a failure, the client will be notified.
 
 The client indicates its preferred message delivery mode by means of the *snd-settle-mode* and *rcv-settle-mode* fields of its *attach* frame during link establishment. Clients should use `mixed` as the *snd-settle-mode* and `first` as the *rcv-settle-mode* in order to be able to use the same link for sending all types of messages using different delivery semantics as described in the following sections.
 
@@ -78,10 +82,12 @@ The command-line client supports the following parameters (with default values):
 
 To run the client to send a telemetry message to Hono, open a terminal and execute the following:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
-    
-    Accepted{}
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
+
+Accepted{}
+~~~
 
 The client prints the outcome of the operation to standard out. The outcome above (`Accepted`) indicates that the request to upload the data has succeeded.
 
@@ -126,15 +132,19 @@ When a device publishes data to the `telemetry` address, the AMQP adapter automa
 
 Publish some JSON data for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
+~~~
 
 Notice that we only supplied a new value for the message address, leaving the other default values.
 
 Publish some JSON data for device `4711` using a client certificate for authentication:
 
-	# in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.port=5671 --hono.client.certPath=config/hono-demo-certs-jar/device-4711-cert.pem --hono.client.keyPath=config/hono-demo-certs-jar/device-4711-key.pem --hono.client.trustStorePath=config/hono-demo-certs-jar/trusted-certs.pem --hono.client.hostnameVerificationRequired=false
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.port=5671 --hono.client.certPath=config/hono-demo-certs-jar/device-4711-cert.pem --hono.client.keyPath=config/hono-demo-certs-jar/device-4711-key.pem --hono.client.trustStorePath=config/hono-demo-certs-jar/trusted-certs.pem --hono.client.hostnameVerificationRequired=false
+~~~
 
 ## Publish Telemetry Data (unauthenticated Device)
 
@@ -160,8 +170,10 @@ Note how verbose the address is for unauthenticated devices. This address can be
 
 Publish some JSON data for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --message.address=t/DEFAULT_TENANT/4711
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --message.address=t/DEFAULT_TENANT/4711
+~~~
 
 ## Publish Telemetry Data (authenticated Gateway)
 
@@ -171,8 +183,10 @@ A device that publishes data on behalf of another device is called a gateway dev
 
 A gateway connecting to the adapter using `gw@DEFAULT_TENANT` as username and `gw-secret` as password and then publishing some JSON data for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=gw@DEFAULT_TENANT --hono.client.password=gw-secret --message.address=t/DEFAULT_TENANT/4711
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=gw@DEFAULT_TENANT --hono.client.password=gw-secret --message.address=t/DEFAULT_TENANT/4711
+~~~
 
 In this example, we are using message address `t/DEFAULT_TENANT/4711` which contains the device that the gateway is publishing the message for.
 
@@ -204,8 +218,10 @@ This is the preferred way for devices to publish events. It is available only if
 
 Upload a JSON string for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret --message.address=event --message.payload='{"alarm": 1}'
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret --message.address=event --message.payload='{"alarm": 1}'
+~~~
 
 ## Publish an Event (unauthenticated Device)
 
@@ -231,8 +247,10 @@ This address format is used by devices that have not authenticated to the protoc
 
 Publish some JSON data for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --message.address=e/DEFAULT_TENANT/4711 --message.payload='{"alarm": 1}'
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --message.address=e/DEFAULT_TENANT/4711 --message.payload='{"alarm": 1}'
+~~~
 
 ## Publish an Event (authenticated Gateway)
 
@@ -240,8 +258,10 @@ Publish some JSON data for device `4711`:
 
 A gateway connecting to the adapter using `gw@DEFAULT_TENANT` as username and `gw-secret` as password and then publishing some JSON data for device `4711`:
 
-    # in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=gw@DEFAULT_TENANT --hono.client.password=gw-secret --message.address=e/DEFAULT_TENANT/4711
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-send --hono.client.username=gw@DEFAULT_TENANT --hono.client.password=gw-secret --message.address=e/DEFAULT_TENANT/4711
+~~~
 
 In this example, we are using message address `e/DEFAULT_TENANT/4711` which contains the device that the gateway is publishing the message for.
 
@@ -259,8 +279,10 @@ The AMQP adapter checks the configured [message limit] ({{< relref "/concepts/re
 
 A device MUST use the following source address in its *attach* frame to open a link for receiving commands:
 
-* `command` (authenticated device/gateway)
+* `command` (authenticated device)
+* `command` (authenticated gateway receiving commands for all devices it acts on behalf of)
 * `command/${tenant}/${device-id}` (unauthenticated device)
+* `command/${tenant}/${device-id}` (authenticated gateway receiving commands for a specific device it acts on behalf of)
 
 {{% note %}}
 Previous versions of Hono used `control` instead of `command` as address prefix. Using the `control` prefix is still supported but deprecated. 
@@ -303,20 +325,19 @@ The AMQP adapter client can be used to simulate a device which receives commands
 
 Start the AMQP adapter client, as follows:
 
-	# in directory: hono/cli/target/
-    java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-command --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
-    Device is now ready to receive commands (Press Ctrl + c to terminate)
+~~~sh
+# in directory: hono/cli/target/
+java -jar hono-cli-*-exec.jar --spring.profiles.active=amqp-command --hono.client.username=sensor1@DEFAULT_TENANT --hono.client.password=hono-secret
+~~~
 
-After successfully starting the client, a message indicating that the device is ready to receive commands will be printed to standard output. The device is now waiting to receive commands from applications. To send a command to the device, open a new terminal shell and start the command application, as shown below:
+After successfully starting the client, a message indicating that the device is ready to receive commands will be printed to standard output. The device is now waiting to receive commands from applications. 
 
-	# in directory: hono/cli/
-    java -jar target/hono-cli-*-exec.jar --hono.client.host=localhost --hono.client.username=consumer@HONO --hono.client.password=verysecret --spring.profiles.active=command,ssl
-    >>>>>>>>> Enter name of command for device [DEFAULT_TENANT:4711] (prefix with 'ow:' to send one-way command):
-	setBrightness
-	>>>>>>>>> Enter command payload:
-	some-payload
-	>>>>>>>>> Enter content type:
-	text/plain
+To send a command to the device, open a new terminal shell and start the command application, as shown below:
+
+~~~sh
+# in directory: hono/cli/
+java -jar target/hono-cli-*-exec.jar --hono.client.host=localhost --hono.client.username=consumer@HONO --hono.client.password=verysecret --spring.profiles.active=command,ssl
+~~~
 
 {{% note %}}
 Change into the `cli` directory before running the command above to start the command application. If you change into the target directory (i.e `cli/target`), then the client will not be able to locate to certificate needed to connect to the messaging network.
@@ -324,10 +345,21 @@ Change into the `cli` directory before running the command above to start the co
 
 Once the command application starts successfully, enter a command name, payload and content-type of the command to send to the device.
 
-After sending the command, the device (i.e AMQP command client) will print out the command name and payload that it receives and automatically sends a command response to the application.
+~~~plaintext
+>>>>>>>>> Enter name of command for device [DEFAULT_TENANT:4711] (prefix with 'ow:' to send one-way command):
+setBrightness
+>>>>>>>>> Enter command payload:
+some-payload
+>>>>>>>>> Enter content type:
+text/plain
+~~~
 
-    $ Received Command Message : [Command name: setBrightness, Command payload: some-payload]
-    $ Command response sent [outcome: Accepted{}]
+After sending the command, the device (i.e. AMQP command client) will print out the command name and payload that it receives and automatically sends a command response to the application.
+
+~~~plaintext
+Received Command Message : [Command name: setBrightness, Command payload: some-payload]
+Command response sent [outcome: Accepted{}]
+~~~
 
 ## Downstream Meta Data
 

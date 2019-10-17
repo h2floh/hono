@@ -14,7 +14,6 @@
 package org.eclipse.hono.tests.http;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.eclipse.hono.tests.http.HttpProtocolException.assertProtocolError;
 
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
@@ -23,9 +22,11 @@ import java.security.KeyPair;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
@@ -38,7 +39,7 @@ import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.service.management.device.Device;
 import org.eclipse.hono.service.management.tenant.Adapter;
 import org.eclipse.hono.service.management.tenant.Tenant;
-import org.eclipse.hono.service.management.tenant.TrustedCertificateAuthority;
+import org.eclipse.hono.tests.CommandEndpointConfiguration.SubscriberRole;
 import org.eclipse.hono.tests.CrudHttpClient;
 import org.eclipse.hono.tests.IntegrationTestSupport;
 import org.eclipse.hono.tests.Tenants;
@@ -66,6 +67,7 @@ import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.PemTrustOptions;
 import io.vertx.core.net.SelfSignedCertificate;
+import io.vertx.junit5.Checkpoint;
 import io.vertx.junit5.Timeout;
 import io.vertx.junit5.VertxTestContext;
 
@@ -213,14 +215,17 @@ public abstract class HttpTestBase {
      */
     static Stream<HttpCommandEndpointConfiguration> commandAndControlVariants() {
         return Stream.of(
-                new HttpCommandEndpointConfiguration(false, false, false),
-                new HttpCommandEndpointConfiguration(false, false, true),
-                new HttpCommandEndpointConfiguration(false, true, false),
-                new HttpCommandEndpointConfiguration(false, true, true),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, false, true),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, true, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, true, true),
 
                 // gateway devices are supported with north bound "command" endpoint only
-                new HttpCommandEndpointConfiguration(true, false, false),
-                new HttpCommandEndpointConfiguration(true, true, false)
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_ALL_DEVICES, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_ALL_DEVICES, true, false),
+
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_SINGLE_DEVICE, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_SINGLE_DEVICE, true, false)
                 );
     }
 
@@ -401,7 +406,7 @@ public abstract class HttpTestBase {
     protected void testUploadMessages(
             final VertxTestContext ctx,
             final String tenantId,
-            final Consumer<Message> messageConsumer,
+            final Function<Message, Future<?>> messageConsumer,
             final Function<Integer, Future<MultiMap>> requestSender) throws InterruptedException {
         testUploadMessages(ctx, tenantId, messageConsumer, requestSender, MESSAGES_TO_SEND);
     }
@@ -419,22 +424,34 @@ public abstract class HttpTestBase {
     protected void testUploadMessages(
             final VertxTestContext ctx,
             final String tenantId,
-            final Consumer<Message> messageConsumer,
+            final Function<Message, Future<?>> messageConsumer,
             final Function<Integer, Future<MultiMap>> requestSender,
             final int numberOfMessages) throws InterruptedException {
 
-        final CountDownLatch received = new CountDownLatch(numberOfMessages);
+        final VertxTestContext messageSending = new VertxTestContext();
+        final Checkpoint messageSent = messageSending.checkpoint(numberOfMessages);
+        final Checkpoint messageReceived = messageSending.laxCheckpoint(numberOfMessages);
+        final AtomicInteger receivedMessageCount = new AtomicInteger(0);
+
         final VertxTestContext setup = new VertxTestContext();
 
         createConsumer(tenantId, msg -> {
             logger.trace("received {}", msg);
             assertMessageProperties(ctx, msg);
-            if (messageConsumer != null) {
-                messageConsumer.accept(msg);
-            }
-            received.countDown();
-            if (received.getCount() % 20 == 0) {
-                logger.info("messages received: {}", numberOfMessages - received.getCount());
+            Optional.ofNullable(messageConsumer)
+            .map(consumer -> consumer.apply(msg))
+            .orElseGet(() -> Future.succeededFuture())
+            .setHandler(attempt -> {
+                if (attempt.succeeded()) {
+                    receivedMessageCount.incrementAndGet();
+                    messageReceived.flag();
+                } else {
+                    logger.error("failed to process message from device", attempt.cause());
+                    messageSending.failNow(attempt.cause());
+                }
+            });
+            if (receivedMessageCount.get() % 20 == 0) {
+                logger.info("messages received: {}", receivedMessageCount.get());
             }
         }).setHandler(setup.completing());
 
@@ -449,38 +466,41 @@ public abstract class HttpTestBase {
 
         while (messageCount < numberOfMessages) {
 
-            final int currentMessage = messageCount;
             messageCount++;
+            final int currentMessage = messageCount;
 
             final CountDownLatch sending = new CountDownLatch(1);
-            requestSender.apply(currentMessage).compose(this::assertHttpResponse).setHandler(attempt -> {
+            requestSender.apply(currentMessage)
+            .compose(this::assertHttpResponse)
+            .setHandler(attempt -> {
                 try {
                     if (attempt.succeeded()) {
                         logger.debug("sent message {}", currentMessage);
+                        messageSent.flag();
                     } else {
                         logger.info("failed to send message {}: {}", currentMessage, attempt.cause().getMessage());
-                        ctx.failNow(attempt.cause());
+                        messageSending.failNow(attempt.cause());
                     }
                 } finally {
                     sending.countDown();
                 }
             });
-
+            sending.await();
             if (currentMessage % 20 == 0) {
                 logger.info("messages sent: " + currentMessage);
             }
-            sending.await();
         }
 
         final long timeToWait = Math.max(TEST_TIMEOUT_MILLIS - 50 - (System.currentTimeMillis() - testStartTimeMillis),
                 1);
-        if (!received.await(timeToWait, TimeUnit.MILLISECONDS)) {
-            logger.info("sent {} and received {} messages after {} milliseconds",
-                    messageCount, numberOfMessages - received.getCount(), System.currentTimeMillis() - start);
-            ctx.failNow(new IllegalStateException("did not receive all messages sent"));
+        assertThat(messageSending.awaitCompletion(timeToWait, TimeUnit.MILLISECONDS)).isTrue();
+
+        if (messageSending.failed()) {
+            logger.error("test execution failed", messageSending.causeOfFailure());
+            ctx.failNow(messageSending.causeOfFailure());
         } else {
-            logger.info("sent {} and received {} messages after {} milliseconds",
-                    messageCount, numberOfMessages - received.getCount(), System.currentTimeMillis() - start);
+            logger.info("successfully sent {} and received {} messages after {} milliseconds",
+                    messageCount, receivedMessageCount.get(), System.currentTimeMillis() - start);
             ctx.completeNow();
         }
     }
@@ -496,11 +516,6 @@ public abstract class HttpTestBase {
     @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
     public void testUploadFailsForNonMatchingTrustAnchor(final VertxTestContext ctx) throws GeneralSecurityException {
 
-        final Tenant tenant = new Tenant();
-
-        final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                .add(HttpHeaders.ORIGIN, ORIGIN_URI);
 
         final KeyPair keyPair = helper.newEcKeyPair();
 
@@ -508,21 +523,26 @@ public abstract class HttpTestBase {
         helper.getCertificate(deviceCert.certificatePath())
         .compose(cert -> {
 
-            final TrustedCertificateAuthority trustedCertificateAuthority = new TrustedCertificateAuthority()
-                    .setSubjectDn(cert.getIssuerX500Principal().getName(X500Principal.RFC2253))
-                    .setPublicKey(keyPair.getPublic().getEncoded())
-                    .setKeyAlgorithm(keyPair.getPublic().getAlgorithm());
-            tenant.setTrustedCertificateAuthority(trustedCertificateAuthority);
+            final Tenant tenant = Tenants.createTenantForTrustAnchor(
+                    cert.getIssuerX500Principal().getName(X500Principal.RFC2253),
+                    keyPair.getPublic().getEncoded(),
+                    keyPair.getPublic().getAlgorithm());
 
             return helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, cert);
         })
         // WHEN a device tries to upload data and authenticate with a client
         // certificate that has not been signed with the configured trusted CA
-        .compose(ok -> httpClientWithClientCert.create(
-                getEndpointUri(),
-                Buffer.buffer("hello"),
-                requestHeaders,
-                response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED))
+        .compose(ok -> {
+
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.ORIGIN, ORIGIN_URI);
+            return httpClientWithClientCert.create(
+                    getEndpointUri(),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED);
+        })
         // THEN the request fails with a 401
         .setHandler(ctx.failing(t -> {
             ctx.verify(() -> {
@@ -568,7 +588,7 @@ public abstract class HttpTestBase {
 
             // THEN the message gets rejected by the HTTP adapter with a 403
             logger.info("could not publish message for disabled tenant [{}]", tenantId);
-            ctx.verify(() -> assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
             ctx.completeNow();
         }));
     }
@@ -608,7 +628,7 @@ public abstract class HttpTestBase {
             // THEN the message gets rejected by the HTTP adapter with a 404
             logger.info("could not publish message for disabled device [tenant-id: {}, device-id: {}]",
                     tenantId, deviceId);
-            ctx.verify(() ->  assertProtocolError(HttpURLConnection.HTTP_NOT_FOUND, t));
+            ctx.verify(() ->  HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_NOT_FOUND, t));
             ctx.completeNow();
         }));
     }
@@ -653,7 +673,7 @@ public abstract class HttpTestBase {
             // THEN the message gets rejected by the HTTP adapter with a 403
             logger.info("could not publish message for disabled gateway [tenant-id: {}, gateway-id: {}]",
                     tenantId, gatewayId);
-            ctx.verify(() -> assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
             ctx.completeNow();
         }));
     }
@@ -697,7 +717,7 @@ public abstract class HttpTestBase {
             // THEN the message gets rejected by the HTTP adapter with a 403
             logger.info("could not publish message for unauthorized gateway [tenant-id: {}, gateway-id: {}]",
                     tenantId, gatewayId);
-            ctx.verify(() -> assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
             ctx.completeNow();
         }));
     }
@@ -805,7 +825,9 @@ public abstract class HttpTestBase {
         secondMessageReceived.await();
         // send command
         final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-        final Future<Void> commandSent = helper.sendOneWayCommand(tenantId, deviceId, COMMAND_TO_SEND, "application/json", inputData.toBuffer(), null, 3000);
+        final Future<Void> commandSent = helper.sendOneWayCommand(tenantId, deviceId, COMMAND_TO_SEND,
+                "application/json", inputData.toBuffer(),
+                IntegrationTestSupport.newCommandMessageProperties(() -> true), 3000);
         logger.info("sent one-way command to device");
 
         // THEN both requests succeed
@@ -850,15 +872,18 @@ public abstract class HttpTestBase {
 
         testUploadMessages(ctx, tenantId,
                 msg -> {
+                    // do NOT send a command, but let the HTTP adapter's timer expire
                     logger.trace("received message");
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                    .map(notification -> {
                         ctx.verify(() -> {
                             assertThat(notification.getTtd()).isEqualTo(2);
                             assertThat(notification.getTenantId()).isEqualTo(tenantId);
                             assertThat(notification.getDeviceId()).isEqualTo(deviceId);
                         });
-                    });
-                    // do NOT send a command, but let the HTTP adapter's timer expire
+                        return Future.succeededFuture();
+                    })
+                    .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
                     return httpClient.create(
@@ -918,49 +943,57 @@ public abstract class HttpTestBase {
             return;
         }
 
-        final String commandTarget = helper.setupGatewayDeviceBlocking(tenantId, deviceId, endpointConfig.isGatewayDevice(), 5);
+        final String commandTargetDeviceId = endpointConfig.isSubscribeAsGateway()
+                ? helper.setupGatewayDeviceBlocking(tenantId, deviceId, 5)
+                : deviceId;
+        final String subscribingDeviceId = endpointConfig.isSubscribeAsGatewayForSingleDevice() ? commandTargetDeviceId
+                : deviceId;
 
+        final AtomicInteger counter = new AtomicInteger();
         testUploadMessages(ctx, tenantId,
                 msg -> {
 
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
-                        logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
-                        ctx.verify(() -> {
-                            assertThat(notification.getTenantId()).isEqualTo(tenantId);
-                            assertThat(notification.getDeviceId()).isEqualTo(deviceId);
-                        });
-                        // now ready to send a command
-                        final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-                        helper.sendCommand(
-                                tenantId,
-                                commandTarget,
-                                COMMAND_TO_SEND,
-                                "application/json",
-                                inputData.toBuffer(),
-                                null,
-                                notification.getMillisecondsUntilExpiry(),
-                                endpointConfig.isLegacyNorthboundEndpoint())
-                        .setHandler(ctx.succeeding(response -> {
-                            ctx.verify(() -> {
-                                assertThat(response.getContentType()).isEqualTo("text/plain");
-                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_DEVICE_ID, String.class)).isEqualTo(deviceId);
-                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_TENANT_ID, String.class)).isEqualTo(tenantId);
-                            });
-                        }));
-                    });
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                            .map(notification -> {
+                                logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
+                                ctx.verify(() -> {
+                                    assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                                    assertThat(notification.getDeviceId()).isEqualTo(subscribingDeviceId);
+                                });
+                                // now ready to send a command
+                                final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
+                                return helper.sendCommand(
+                                        tenantId,
+                                        commandTargetDeviceId,
+                                        COMMAND_TO_SEND,
+                                        "application/json",
+                                        inputData.toBuffer(),
+                                        // set "forceCommandRerouting" message property so that half the command are rerouted via the AMQP network
+                                        IntegrationTestSupport.newCommandMessageProperties(() -> counter.getAndIncrement() >= MESSAGES_TO_SEND/2),
+                                        notification.getMillisecondsUntilExpiry(),
+                                        endpointConfig.isLegacyNorthboundEndpoint())
+                                        .map(response -> {
+                                            ctx.verify(() -> {
+                                                assertThat(response.getContentType()).isEqualTo("text/plain");
+                                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_DEVICE_ID, String.class)).isEqualTo(deviceId);
+                                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_TENANT_ID, String.class)).isEqualTo(tenantId);
+                                            });
+                                            return response;
+                                        });
+                            })
+                            .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
-                    return httpClient.create(
-                            getEndpointUri(),
-                            Buffer.buffer("hello " + count),
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_OK)
+                    final Buffer buffer = Buffer.buffer("hello " + count);
+                    return sendHttpRequestForGatewayOrDevice(buffer, requestHeaders, endpointConfig, commandTargetDeviceId)
                             .map(responseHeaders -> {
 
                                 final String requestId = responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID);
 
                                 ctx.verify(() -> {
                                     // assert that the response contains a command
+                                    assertThat(responseHeaders.get(Constants.HEADER_COMMAND))
+                                            .as("response #" + count + " doesn't contain command").isNotNull();
                                     assertThat(responseHeaders.get(Constants.HEADER_COMMAND)).isEqualTo(COMMAND_TO_SEND);
                                     assertThat(responseHeaders.get(HttpHeaders.CONTENT_TYPE)).isEqualTo("application/json");
                                     assertThat(requestId).isNotNull();
@@ -1005,7 +1038,7 @@ public abstract class HttpTestBase {
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
                 .add(HttpHeaders.AUTHORIZATION, authorization)
                 .add(HttpHeaders.ORIGIN, ORIGIN_URI)
-                .add(Constants.HEADER_TIME_TILL_DISCONNECT, "2");
+                .add(Constants.HEADER_TIME_TILL_DISCONNECT, "4");
 
         helper.registry
         .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
@@ -1017,36 +1050,41 @@ public abstract class HttpTestBase {
             return;
         }
 
-        final String commandTarget = helper.setupGatewayDeviceBlocking(tenantId, deviceId, endpointConfig.isGatewayDevice(), 5);
+        final String commandTargetDeviceId = endpointConfig.isSubscribeAsGateway()
+                ? helper.setupGatewayDeviceBlocking(tenantId, deviceId, 5)
+                : deviceId;
+        final String subscribingDeviceId = endpointConfig.isSubscribeAsGatewayForSingleDevice() ? commandTargetDeviceId
+                : deviceId;
 
+        final AtomicInteger counter = new AtomicInteger();
         testUploadMessages(ctx, tenantId,
                 msg -> {
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                            .map(notification -> {
 
-                        logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
-                        assertThat(notification.getTenantId()).isEqualTo(tenantId);
-                        assertThat(notification.getDeviceId()).isEqualTo(deviceId);
-                        // now ready to send a command
-                        final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-                        helper.sendOneWayCommand(
-                                tenantId,
-                                commandTarget,
-                                COMMAND_TO_SEND,
-                                "application/json",
-                                inputData.toBuffer(),
-                                null,
-                                notification.getMillisecondsUntilExpiry(),
-                                endpointConfig.isLegacyNorthboundEndpoint())
-                        .setHandler(ctx.succeeding());
-                    });
+                                logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
+                                ctx.verify(() -> {
+                                    assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                                    assertThat(notification.getDeviceId()).isEqualTo(subscribingDeviceId);
+                                });
+                                // now ready to send a command
+                                final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
+                                return helper.sendOneWayCommand(
+                                        tenantId,
+                                        commandTargetDeviceId,
+                                        COMMAND_TO_SEND,
+                                        "application/json",
+                                        inputData.toBuffer(),
+                                        // set "forceCommandRerouting" message property so that half the command are rerouted via the AMQP network
+                                        IntegrationTestSupport.newCommandMessageProperties(() -> counter.getAndIncrement() >= MESSAGES_TO_SEND/2),
+                                        notification.getMillisecondsUntilExpiry(),
+                                        endpointConfig.isLegacyNorthboundEndpoint());
+                            })
+                            .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
                     final Buffer payload = Buffer.buffer("hello " + count);
-                    return httpClient.create(
-                            getEndpointUri(),
-                            payload,
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_OK)
+                    return sendHttpRequestForGatewayOrDevice(payload, requestHeaders, endpointConfig, commandTargetDeviceId)
                     .recover(t -> {
 
                         // we probably sent the request before the
@@ -1054,13 +1092,10 @@ public abstract class HttpTestBase {
                         // consumer for the previous request
                         // wait a little and try again
                         final Future<MultiMap> retryResult = Future.future();
-                        VERTX.setTimer(100, retry -> {
-                            logger.info("re-trying last request [{}]", count);
-                            httpClient.create(
-                                    getEndpointUri(),
-                                    payload,
-                                    requestHeaders,
-                                    response -> response.statusCode() == HttpURLConnection.HTTP_OK)
+                        VERTX.setTimer(300, retry -> {
+                            logger.info("re-trying request [{}] which failed with unexpected status code {}",
+                                    count, ServiceInvocationException.extractStatusCode(t));
+                            sendHttpRequestForGatewayOrDevice(payload, requestHeaders, endpointConfig, commandTargetDeviceId)
                             .setHandler(retryResult);
                         });
                         return retryResult;
@@ -1068,6 +1103,8 @@ public abstract class HttpTestBase {
                     .map(responseHeaders -> {
                         ctx.verify(() -> {
                             // assert that the response contains a one-way command
+                            assertThat(responseHeaders.get(Constants.HEADER_COMMAND))
+                                    .as("response #" + count + " doesn't contain command").isNotNull();
                             assertThat(responseHeaders.get(Constants.HEADER_COMMAND)).isEqualTo(COMMAND_TO_SEND);
                             assertThat(responseHeaders.get(HttpHeaders.CONTENT_TYPE)).isEqualTo("application/json");
                             assertThat(responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID)).isNull();
@@ -1075,6 +1112,18 @@ public abstract class HttpTestBase {
                         return responseHeaders;
                     });
                 });
+    }
+
+    private Future<MultiMap> sendHttpRequestForGatewayOrDevice(final Buffer payload, final MultiMap requestHeaders,
+            final HttpCommandEndpointConfiguration endpointConfig, final String requestDeviceId) {
+        if (endpointConfig.isSubscribeAsGatewayForSingleDevice()) {
+            final String uri = getEndpointUri() + "/" + tenantId + "/" + requestDeviceId;
+            // GW uses PUT when acting on behalf of a device
+            return httpClient.update(uri, payload, requestHeaders, status -> status == HttpURLConnection.HTTP_OK);
+        } else {
+            return httpClient.create(getEndpointUri(), payload, requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_OK);
+        }
     }
 
     private void assertMessageProperties(final VertxTestContext ctx, final Message msg) {

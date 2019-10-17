@@ -18,6 +18,12 @@ The example configuration that comes with Hono and which is used in this guide i
 The most basic requirement is, of course, a Kubernetes cluster to deploy to.
 The [Kubernetes setup guide]({{< relref "create-kubernetes-cluster.md" >}}) describes options available for setting up a cluster.
 
+{{% note title="Supported Kubernetes Versions" %}}
+Hono *should* run on any version of Kubernetes starting with 1.13.6. However, it has been tested with several
+specific versions only. The most recent version known to work is 1.15.4 so if you experience any issues with
+running Hono on another version, please try to deploy to 1.15.4 before raising an issue.
+{{% /note %}}
+
 #### Helm
 
 Helm is a tool for managing (complex) Kubernetes applications. In this guide it is used to deploy Hono to the cluster.
@@ -57,6 +63,13 @@ helm status hono
 helm get hono
 ~~~
 
+{{% note title="Kubernetes 1.16" %}}
+Hono can not be deployed to Kubernetes 1.16 using Helm because current versions (< 2.15) of Helm [don't support installation of
+the Tiller component to Kubernetes 1.16](https://github.com/helm/helm/issues/6374).
+Until that problem is fixed in Helm, the workaround is to either deploy to an earlier version of Kubernetes or deploy using
+the *kubectl* command as described in the next section.
+{{% /note %}}
+
 ### Deploying Hono using kubectl
 
 In cases where installation of Helm's Tiller service into the cluster is not an option, the Kubernetes resource descriptors created by Helm can be deployed manually using the `kubectl` command line tool.
@@ -70,6 +83,19 @@ helm dep update eclipse-hono/
 helm template --name hono --namespace hono --output-dir resources eclipse-hono/
 ~~~
 
+{{% note title="Kubernetes 1.16" %}}
+Hono can currently only be deployed to Kubernetes 1.16 if Prometheus and Grafana are disabled.
+This is due to a [bug](https://github.com/helm/charts/pull/17268) in the Prometheus Helm chart which is used to deploy
+Prometheus as part of Hono' example deployment.
+Until the bug is fixed, the workaround is to disable deployment of Prometheus and Grafana by setting the following
+configuration properties when creating the resource descriptors:
+
+```sh
+# in directory: eclipse-hono-$VERSION
+helm template --name hono --namespace hono --set prometheus.createInstance=false --set grafana.enabled=false --output-dir resources eclipse-hono/
+```
+{{% /note %}}
+
 This will create a `resources/eclipse-hono` folder containing all the resource descriptors which can then be deployed to the cluster using `kubectl`:
 
 ~~~sh
@@ -78,6 +104,7 @@ kubectl create namespace hono
 kubectl config set-context $(kubectl config current-context) --namespace=hono
 kubectl apply -f ./resources -R
 ~~~
+
 
 ## Verifying the Installation
 
@@ -178,7 +205,7 @@ and connection parameters.
 
 The easiest way to set these properties is by means of putting them into a YAML file with content like this:
 
-```
+```yaml
 # do not deploy example AMQP Messaging Network
 amqpMessagingNetworkExample:
   enabled: false
@@ -227,7 +254,7 @@ In order to do so, the protocol adapters need to be configured with information 
 
 The easiest way to set these properties is by means of putting them into a YAML file with the following content:
 
-```
+```yaml
 # do not deploy example Device Registry
 deviceRegistryExample:
   enabled: false
@@ -300,7 +327,7 @@ The Helm chart supports deployment of a simple data grid which can be used for e
 
 ~~~sh
 # in directory: eclipse-hono-$VERSION
-helm install --dep-up --name hono --namespace hono --set deviceConnectionService.enabled=true --set dataGridDeployExample=true eclipse-hono/
+helm install --dep-up --name hono --namespace hono --set deviceConnectionService.enabled=true --set dataGridExample.enabled=true eclipse-hono/
 ~~~
 
 This will deploy the data grid and configure the Device Connection service to use it for storing the connection data.
@@ -437,7 +464,7 @@ k8s_namespace=honons
 kubectl create namespace $k8s_namespace
 ```
 
-Finally install Eclipse Hono™. Leveraging the _managed-premium-retain_ storage in combination with _deviceRegistry.resetFiles=false_ parameter is optional but ensures that Device registry storage will retain future update deployments.
+Finally install Hono. Leveraging the _managed-premium-retain_ storage in combination with _deviceRegistry.resetFiles=false_ parameter is optional but ensures that Device registry storage will retain future update deployments.
 
 ```bash
 # in Hono working tree directory: hono/deploy
@@ -470,13 +497,13 @@ Note: add the following lines in case you opted for the Azure Service Bus varian
     --set amqpMessagingNetworkExample.broker.servicebus.host=$service_bus_namespace.servicebus.windows.net \
 ```
 
-Have fun with the Eclipse Hono™ on Microsoft Azure!
+Have fun with Hono on Microsoft Azure!
 
 Next steps:
 
 You can follow the steps as described in the [getting started](https://www.eclipse.org/hono/getting-started/) tutorial with the following differences:
 
-Compared to a plain k8s deployment Azure provides us DNS names with static IPs for the Eclipse Hono™ endpoints. To retrieve them:
+Compared to a plain k8s deployment Azure provides us DNS names with static IPs for the Hono endpoints. To retrieve them:
 
 ```bash
 HTTP_ADAPTER_IP=`az group deployment show --name HonoBasicInfrastructure --resource-group $resourcegroup_name --query properties.outputs.httpPublicIPFQDN.value -o tsv`

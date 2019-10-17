@@ -22,9 +22,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+
 import javax.security.auth.x500.X500Principal;
 
 import org.eclipse.hono.client.ServiceInvocationException;
+import org.eclipse.hono.service.http.HttpUtils;
 import org.eclipse.hono.service.management.credentials.CommonCredential;
 import org.eclipse.hono.service.management.credentials.PasswordCredential;
 import org.eclipse.hono.service.management.credentials.PskCredential;
@@ -41,12 +43,9 @@ import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.json.Json;
-
 import io.vertx.core.json.JsonObject;
-import static org.eclipse.hono.service.http.HttpUtils.CONTENT_TYPE_JSON;
 
 /**
  * A client for accessing the Device Registry's HTTP resources for the Device Registration, Credentials and Tenant API.
@@ -54,17 +53,32 @@ import static org.eclipse.hono.service.http.HttpUtils.CONTENT_TYPE_JSON;
  */
 public final class DeviceRegistryHttpClient {
 
+    /**
+     * The URI pattern for adding a tenant.
+     */
     public static final String URI_ADD_TENANT = String.format("/%s/%s",
             RegistryManagementConstants.API_VERSION, RegistryManagementConstants.TENANT_HTTP_ENDPOINT);
+    /**
+     * The URI pattern for addressing a tenant instance.
+     */
     public static final String TEMPLATE_URI_TENANT_INSTANCE = String.format("/%s/%s/%%s",
             RegistryManagementConstants.API_VERSION, RegistryManagementConstants.TENANT_HTTP_ENDPOINT);
 
+    /**
+     * The URI pattern for addressing a device instance.
+     */
     public static final String TEMPLATE_URI_REGISTRATION_INSTANCE = String.format("/%s/%s/%%s/%%s",
             RegistryManagementConstants.API_VERSION, RegistryManagementConstants.REGISTRATION_HTTP_ENDPOINT);
 
-    public static final String TEMPLATE_URI_CREDENTIALS_INSTANCE = String.format("/%s/%s/%%s/%%s/%%s",
-            RegistryManagementConstants.API_VERSION, RegistryManagementConstants.CREDENTIALS_ENDPOINT);
+    /**
+     * The URI pattern for addressing the credentials of a device.
+     */
     public static final String TEMPLATE_URI_CREDENTIALS_BY_DEVICE = String.format("/%s/%s/%%s/%%s",
+            RegistryManagementConstants.API_VERSION, RegistryManagementConstants.CREDENTIALS_ENDPOINT);
+    /**
+     * The URI pattern for addressing a device's credentials of a specific type.
+     */
+    public static final String TEMPLATE_URI_CREDENTIALS_INSTANCE = String.format("/%s/%s/%%s/%%s/%%s",
             RegistryManagementConstants.API_VERSION, RegistryManagementConstants.CREDENTIALS_ENDPOINT);
 
     private static final Logger LOG = LoggerFactory.getLogger(DeviceRegistryHttpClient.class);
@@ -539,7 +553,7 @@ public final class DeviceRegistryHttpClient {
 
         final MultiMap headers = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.IF_MATCH, version)
-                .add(HttpHeaders.CONTENT_TYPE, CONTENT_TYPE_JSON);
+                .add(HttpHeaders.CONTENT_TYPE, HttpUtils.CONTENT_TYPE_JSON);
 
         // encode array not list, workaround for vert.x issue
         final var payload = Json.encodeToBuffer(credentialsSpec.toArray(CommonCredential[]::new));

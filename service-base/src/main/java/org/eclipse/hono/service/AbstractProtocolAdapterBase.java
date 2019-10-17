@@ -50,8 +50,8 @@ import org.eclipse.hono.service.auth.ValidityBasedTrustOptions;
 import org.eclipse.hono.service.http.HttpUtils;
 import org.eclipse.hono.service.limiting.ConnectionLimitManager;
 import org.eclipse.hono.service.monitoring.ConnectionEventProducer;
-import org.eclipse.hono.service.plan.NoopResourceLimitChecks;
-import org.eclipse.hono.service.plan.ResourceLimitChecks;
+import org.eclipse.hono.service.resourcelimits.NoopResourceLimitChecks;
+import org.eclipse.hono.service.resourcelimits.ResourceLimitChecks;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.CredentialsConstants;
 import org.eclipse.hono.util.DeviceConnectionConstants;
@@ -95,7 +95,7 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
     /**
      * The <em>application/octet-stream</em> content type.
      */
-    protected static final String CONTENT_TYPE_OCTET_STREAM = "application/octet-stream";
+    protected static final String CONTENT_TYPE_OCTET_STREAM = MessageHelper.CONTENT_TYPE_OCTET_STREAM;
     /**
      * The key used for storing a Micrometer {@code Sample} in an
      * execution context.
@@ -450,18 +450,18 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
     @Override
     protected final Future<Void> stopInternal() {
 
-        LOG.info("stopping protocol adapter");
+        log.info("stopping protocol adapter");
         final Future<Void> result = Future.future();
         final Future<Void> doStopResult = Future.future();
         doStop(doStopResult);
         doStopResult
                 .compose(s -> closeServiceClients())
                 .recover(t -> {
-                    LOG.info("error while stopping protocol adapter", t);
+                    log.info("error while stopping protocol adapter", t);
                     return Future.failedFuture(t);
                 }).compose(s -> {
                     result.complete();
-                    LOG.info("successfully stopped protocol adapter");
+                    log.info("successfully stopped protocol adapter");
                 }, result);
         return result;
     }
@@ -510,11 +510,11 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
         Objects.requireNonNull(tenantConfig);
 
         if (tenantConfig.isAdapterEnabled(getTypeName())) {
-            LOG.debug("protocol adapter [{}] is enabled for tenant [{}]",
+            log.debug("protocol adapter [{}] is enabled for tenant [{}]",
                     getTypeName(), tenantConfig.getTenantId());
             return Future.succeededFuture(tenantConfig);
         } else {
-            LOG.debug("protocol adapter [{}] is disabled for tenant [{}]",
+            log.debug("protocol adapter [{}] is disabled for tenant [{}]",
                     getTypeName(), tenantConfig.getTenantId());
             return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_FORBIDDEN,
                     "adapter disabled for tenant"));
@@ -631,7 +631,7 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
             }
         }
         return result.recover(t -> {
-            LOG.debug("validation failed for address [{}], device [{}]: {}", address, authenticatedDevice, t.getMessage());
+            log.debug("validation failed for address [{}], device [{}]: {}", address, authenticatedDevice, t.getMessage());
             return Future.failedFuture(t);
         });
     }
@@ -695,22 +695,22 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
 
         Objects.requireNonNull(factory);
         factory.addDisconnectListener(c -> {
-            LOG.info("lost connection to {}", serviceName);
+            log.info("lost connection to {}", serviceName);
             if (disconnectListener != null) {
                 disconnectListener.onDisconnect(c);
             }
         });
         factory.addReconnectListener(c -> {
-            LOG.info("connection to {} re-established", serviceName);
+            log.info("connection to {} re-established", serviceName);
             if (reconnectListener != null) {
                 reconnectListener.onReconnect(c);
             }
         });
         return factory.connect().map(c -> {
-            LOG.info("connected to {}", serviceName);
+            log.info("connected to {}", serviceName);
             return c;
         }).recover(t -> {
-            LOG.warn("failed to connect to {}", serviceName, t);
+            log.warn("failed to connect to {}", serviceName, t);
             return Future.failedFuture(t);
         });
     }
@@ -954,7 +954,7 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
                     // so don't wait for the outcome here
                     updateLastGateway(registrationAssertion, tenantId, deviceId, authenticatedDevice, context)
                             .otherwise(t -> {
-                                LOG.warn("failed to update last gateway [tenantId: {}, deviceId: {}]", tenantId, deviceId, t);
+                                log.warn("failed to update last gateway [tenantId: {}, deviceId: {}]", tenantId, deviceId, t);
                                 return null;
                             });
                     return Future.succeededFuture(registrationAssertion);
@@ -1053,29 +1053,30 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
      * Subclasses are encouraged to use this method for creating {@code Message} instances to be sent downstream in
      * order to have required Hono specific properties being set on the message automatically.
      * <p>
-     * This method creates a new {@code Message} and sets
-     * <ul>
-     * <li>its <em>content-type</em> to the given value,</li>
-     * <li>its <em>creation-time</em> to the current system time and</li>
-     * <li>its payload as an AMQP <em>Data</em> section</li>
-     * </ul>
-     * The message is then passed to {@link #addProperties(Message, ResourceIdentifier, String, TenantObject, JsonObject, Integer)}.
+     * This method simply delegates to {@link #newMessage(ResourceIdentifier, String, String, Buffer, TenantObject,
+     * JsonObject, Integer, Duration)}.
      *
-     * @param target The resource that the message is targeted at.
-     * @param publishAddress The address that the message has been published to originally by the device. (may be
-     *            {@code null}).
+     * @param target The target address of the message or {@code null} if the message's
+     *               <em>to</em> property contains the target address. The target
+     *               address is used to determine if the message represents an event or not.
+     *               Determining this information from the <em>to</em> property
+     *               requires additional parsing which can be prevented by passing in the
+     *               target address as a {@code ResourceIdentifier} instead.
+     * @param publishAddress The address that the message has been published to originally by the device or
+     *            {@code null} if unknown.
      *            <p>
      *            This address will be transport protocol specific, e.g. an HTTP based adapter will probably use URIs
      *            here whereas an MQTT based adapter might use the MQTT message's topic.
      * @param contentType The content type describing the message's payload or {@code null} if no content type
      *                    should be set.
-     * @param payload The message payload.
-     * @param tenant The tenant that the device belongs to.
+     * @param payload The message payload or {@code null} if the message has no payload.
+     * @param tenant The information registered for the tenant that the device belongs to or {@code null}
+     *               if no information about the tenant is available.
      * @param registrationInfo The device's registration information as retrieved by the <em>Device Registration</em>
      *            service's <em>assert Device Registration</em> operation.
-     * @param timeUntilDisconnect The number of seconds until the device that has published the message
-     *            will disconnect from the protocol adapter (may be {@code null}).
-     * @return The message.
+     * @param timeUntilDisconnect The number of seconds until the device that has published the message will disconnect
+     *            from the protocol adapter or {@code null} if unknown.
+     * @return The newly created message.
      * @throws NullPointerException if target or registration info are {@code null}.
      */
     protected final Message newMessage(
@@ -1097,32 +1098,33 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
      * Subclasses are encouraged to use this method for creating {@code Message} instances to be sent downstream in
      * order to have required Hono specific properties being set on the message automatically.
      * <p>
-     * This method creates a new {@code Message} and sets
-     * <ul>
-     * <li>its <em>content-type</em> to the given value,</li>
-     * <li>its <em>creation-time</em> to the current system time and</li>
-     * <li>its payload as an AMQP <em>Data</em> section</li>
-     * </ul>
-     * The message is then passed to {@link #addProperties(Message, ResourceIdentifier, String, TenantObject, JsonObject, Integer, Duration)}.
+     * This method simply delegates to {@link MessageHelper#newMessage(ResourceIdentifier, String, String, Buffer,
+     * TenantObject, JsonObject, Integer, Duration, String, boolean, boolean)}.
      *
-     * @param target The resource that the message is targeted at.
-     * @param publishAddress The address that the message has been published to originally by the device. (may be
-     *            {@code null}).
+     * @param target The target address of the message or {@code null} if the message's
+     *               <em>to</em> property contains the target address. The target
+     *               address is used to determine if the message represents an event or not.
+     *               Determining this information from the <em>to</em> property
+     *               requires additional parsing which can be prevented by passing in the
+     *               target address as a {@code ResourceIdentifier} instead.
+     * @param publishAddress The address that the message has been published to originally by the device or
+     *            {@code null} if unknown.
      *            <p>
      *            This address will be transport protocol specific, e.g. an HTTP based adapter will probably use URIs
      *            here whereas an MQTT based adapter might use the MQTT message's topic.
      * @param contentType The content type describing the message's payload or {@code null} if no content type
      *                    should be set.
-     * @param payload The message payload.
-     * @param tenant The tenant that the device belongs to.
+     * @param payload The message payload or {@code null} if the message has no payload.
+     * @param tenant The information registered for the tenant that the device belongs to or {@code null}
+     *               if no information about the tenant is available.
      * @param registrationInfo The device's registration information as retrieved by the <em>Device Registration</em>
      *            service's <em>assert Device Registration</em> operation.
-     * @param timeUntilDisconnect The number of seconds until the device that has published the message
-     *            will disconnect from the protocol adapter (may be {@code null}).
-     * @param timeToLive The <em>time-to-live</em> duration set by the device in the downstream message or {@code null}
-     *                   if not set.
-     * @return The message.
-     * @throws NullPointerException if target or registration info are {@code null}.
+     * @param timeUntilDisconnect The number of seconds until the device that has published the message will disconnect
+     *            from the protocol adapter or {@code null} if unknown.
+     * @param timeToLive The message's <em>time-to-live</em> as provided by the device or {@code null} if the
+     *                   device did not provide any TTL.
+     * @return The newly created message.
+     * @throws NullPointerException if registration info is {@code null}.
      */
     protected final Message newMessage(
             final ResourceIdentifier target,
@@ -1134,7 +1136,6 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
             final Integer timeUntilDisconnect,
             final Duration timeToLive) {
 
-        Objects.requireNonNull(target);
         Objects.requireNonNull(registrationInfo);
 
         final Message msg = ProtonHelper.message();
@@ -1142,50 +1143,44 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
         msg.setCreationTime(Instant.now().toEpochMilli());
         MessageHelper.setPayload(msg, contentType, payload);
 
-        return addProperties(msg, target, publishAddress, tenant, registrationInfo, timeUntilDisconnect, timeToLive);
+        return MessageHelper.addProperties(
+                msg,
+                target,
+                publishAddress,
+                tenant,
+                registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS),
+                timeUntilDisconnect,
+                timeToLive,
+                getTypeName(),
+                getConfig().isDefaultsEnabled(),
+                getConfig().isJmsVendorPropsEnabled());
     }
 
     /**
      * Sets Hono specific properties on an AMQP 1.0 message.
      * <p>
-     * The following properties are set:
-     * <ul>
-     * <li><em>to</em> will be set to the address consisting of the target's endpoint and tenant</li>
-     * <li><em>creation-time</em> will be set to the current number of milliseconds since 1970-01-01T00:00:00Z</li>
-     * <li>application property <em>device_id</em> will be set to the target's resourceId property</li>
-     * <li>application property <em>orig_address</em> will be set to the given publish address</li>
-     * <li>application property <em>orig_adapter</em> will be set to the {@linkplain #getTypeName() adapter's name}</li>
-     * <li>application property <em>ttd</em> will be set to the given time-til-disconnect</li>
-     * </ul>
+     * This method simply delegates to {@link #addProperties(Message, ResourceIdentifier, String, TenantObject, JsonObject, Integer, Duration)}.
      * 
-     * In addition, this method
-     * <ul>
-     * <li>augments the message with missing (application) properties corresponding to the
-     * default properties contained in the {@linkplain TenantObject#getDefaults() tenant object}
-     * and the {@linkplain RegistrationConstants#FIELD_PAYLOAD_DEFAULTS registration information}.
-     * Default properties defined at the device level take precedence over properties
-     * with the same name defined at the tenant level,</li>
-     * <li>adds JMS vendor properties if configuration property <em>jmsVendorPropertiesEnabled</em> is set to
-     * {@code true},</li>
-     * <li>sets the message's <em>content-type</em> to the {@linkplain #CONTENT_TYPE_OCTET_STREAM fall back
-     * content type}, if the default properties do not contain a content type and the message has no
-     * content type set yet</li>
-     * </ul>
-
      * @param msg The message to add the properties to.
-     * @param target The resource that the message is targeted at.
-     * @param publishAddress The address that the message has been published to originally by the device. (may be
-     *            {@code null}).
+     * @param target The target address of the message or {@code null} if the message's
+     *               <em>to</em> property contains the target address. The target
+     *               address is used to determine if the message represents an event or not.
+     *               Determining this information from the <em>to</em> property
+     *               requires additional parsing which can be prevented by passing in the
+     *               target address as a {@code ResourceIdentifier} instead.
+     * @param publishAddress The address that the message has been published to originally by the device or
+     *            {@code null} if unknown.
      *            <p>
      *            This address will be transport protocol specific, e.g. an HTTP based adapter will probably use URIs
      *            here whereas an MQTT based adapter might use the MQTT message's topic.
-     * @param tenant The tenant that the device belongs to.
+     * @param tenant The information registered for the tenant that the device belongs to or {@code null}
+     *               if no information about the tenant is available.
      * @param registrationInfo The device's registration information as retrieved by the <em>Device Registration</em>
      *            service's <em>assert Device Registration</em> operation.
-     * @param timeUntilDisconnect The number of seconds until the device that has published the message
-     *            will disconnect from the protocol adapter (may be {@code null}).
+     * @param timeUntilDisconnect The number of seconds until the device that has published the message will disconnect
+     *            from the protocol adapter or {@code null} if unknown.
      * @return The message with its properties set.
-     * @throws NullPointerException if message, target or registration info are {@code null}.
+     * @throws NullPointerException if message or registration info are {@code null}.
      */
     protected final Message addProperties(
             final Message msg,
@@ -1200,45 +1195,31 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
     /**
      * Sets Hono specific properties on an AMQP 1.0 message.
      * <p>
-     * The following properties are set:
-     * <ul>
-     * <li><em>to</em> will be set to the address consisting of the target's endpoint and tenant</li>
-     * <li><em>creation-time</em> will be set to the current number of milliseconds since 1970-01-01T00:00:00Z</li>
-     * <li>application property <em>device_id</em> will be set to the target's resourceId property</li>
-     * <li>application property <em>orig_address</em> will be set to the given publish address</li>
-     * <li>application property <em>orig_adapter</em> will be set to the {@linkplain #getTypeName() adapter's name}</li>
-     * <li>application property <em>ttd</em> will be set to the given time-til-disconnect</li>
-     * </ul>
-     *
-     * In addition, this method
-     * <ul>
-     * <li>augments the message with missing (application) properties corresponding to the default properties contained
-     * in the {@linkplain TenantObject#getDefaults() tenant object} and the
-     * {@linkplain RegistrationConstants#FIELD_PAYLOAD_DEFAULTS registration information}. Default properties defined at
-     * the device level take precedence over properties with the same name defined at the tenant level,</li>
-     * <li>adds JMS vendor properties if configuration property <em>jmsVendorPropertiesEnabled</em> is set to
-     * {@code true},</li>
-     * <li>sets the message's <em>content-type</em> to the {@linkplain #CONTENT_TYPE_OCTET_STREAM fall back content
-     * type}, if the default properties do not contain a content type and the message has no content type set yet and</li>
-     * <li>sets the message's <em>ttl</em> header field based on the given <em>time-to-live</em> duration</li>
-     * </ul>
+     * This method simply delegates to {@link MessageHelper#addProperties(Message, ResourceIdentifier,
+     * String, TenantObject, JsonObject, Integer, Duration, String, boolean, boolean)}.
      * 
      * @param msg The message to add the properties to.
-     * @param target The resource that the message is targeted at.
-     * @param publishAddress The address that the message has been published to originally by the device. (may be
-     *            {@code null}).
+     * @param target The target address of the message or {@code null} if the message's
+     *               <em>to</em> property contains the target address. The target
+     *               address is used to determine if the message represents an event or not.
+     *               Determining this information from the <em>to</em> property
+     *               requires additional parsing which can be prevented by passing in the
+     *               target address as a {@code ResourceIdentifier} instead.
+     * @param publishAddress The address that the message has been published to originally by the device or
+     *            {@code null} if unknown.
      *            <p>
      *            This address will be transport protocol specific, e.g. an HTTP based adapter will probably use URIs
      *            here whereas an MQTT based adapter might use the MQTT message's topic.
-     * @param tenant The tenant that the device belongs to.
+     * @param tenant The information registered for the tenant that the device belongs to or {@code null}
+     *               if no information about the tenant is available.
      * @param registrationInfo The device's registration information as retrieved by the <em>Device Registration</em>
      *            service's <em>assert Device Registration</em> operation.
      * @param timeUntilDisconnect The number of seconds until the device that has published the message will disconnect
-     *            from the protocol adapter (may be {@code null}).
-     * @param timeToLive The <em>time-to-live</em> duration set by the device in the downstream message or {@code null}
-     *                   if not set.
+     *            from the protocol adapter or {@code null} if unknown.
+     * @param timeToLive The message's <em>time-to-live</em> as provided by the device or {@code null} if the
+     *                   device did not provide any TTL.
      * @return The message with its properties set.
-     * @throws NullPointerException if message, target or registration info are {@code null}.
+     * @throws NullPointerException if message or registration info are {@code null}.
      */
     protected final Message addProperties(
             final Message msg,
@@ -1253,123 +1234,17 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
         Objects.requireNonNull(target);
         Objects.requireNonNull(registrationInfo);
 
-        msg.setAddress(target.getBasePath());
-        MessageHelper.addDeviceId(msg, target.getResourceId());
-        MessageHelper.addProperty(msg, MessageHelper.APP_PROPERTY_ORIG_ADAPTER, getTypeName());
-        MessageHelper.annotate(msg, target);
-        if (publishAddress != null) {
-            MessageHelper.addProperty(msg, MessageHelper.APP_PROPERTY_ORIG_ADDRESS, publishAddress);
-        }
-        if (timeUntilDisconnect != null) {
-            MessageHelper.addTimeUntilDisconnect(msg, timeUntilDisconnect);
-        }
-
-        Optional.ofNullable(timeToLive)
-                .ifPresent(value -> MessageHelper.setTimeToLive(msg, value));
-
-        MessageHelper.setCreationTime(msg);
-        addProperties(msg, target, tenant, registrationInfo);
-        return msg;
-    }
-
-    private void addProperties(
-            final Message message,
-            final ResourceIdentifier target,
-            final TenantObject tenant,
-            final JsonObject registrationInfo) {
-
-        final long maxTtl = Optional.ofNullable(tenant.getResourceLimits())
-                .map(limits -> limits.getMaxTtl())
-                .orElse(TenantConstants.UNLIMITED_TTL);
-
-        final boolean isEvent = target.getEndpoint().equals(EventConstants.EVENT_ENDPOINT);
-        // AMQP spec defines TTL as milliseconds
-        final long maxTtlMillis = maxTtl * 1000L;
-        if (isEvent && maxTtl != TenantConstants.UNLIMITED_TTL && message.getTtl() > maxTtlMillis) {
-            LOG.debug("adjusting device provided TTL [{}ms] to max TTL [{}ms]", message.getTtl(), maxTtlMillis);
-            MessageHelper.setTimeToLive(message, Duration.ofSeconds(maxTtl));
-        }
-
-        if (getConfig().isDefaultsEnabled()) {
-            final JsonObject defaults = tenant.getDefaults().copy();
-            final JsonObject deviceDefaults = registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS);
-            if (deviceDefaults != null) {
-                defaults.mergeIn(deviceDefaults);
-            }
-
-            if (isEvent && maxTtl != TenantConstants.UNLIMITED_TTL && !defaults.containsKey(MessageHelper.SYS_HEADER_PROPERTY_TTL)) {
-                // use max TTL as default TTL if no default is set explicitly
-                defaults.put(MessageHelper.SYS_HEADER_PROPERTY_TTL, maxTtl);
-            }
-
-            if (!defaults.isEmpty()) {
-                addDefaults(message, target, defaults, maxTtl);
-            }
-        }
-        if (Strings.isNullOrEmpty(message.getContentType())) {
-            // set default content type if none has been specified when creating the
-            // message nor a default content type is available
-            message.setContentType(CONTENT_TYPE_OCTET_STREAM);
-        }
-        if (getConfig().isJmsVendorPropsEnabled()) {
-            MessageHelper.addJmsVendorProperties(message);
-        }
-    }
-
-    private void addDefaults(
-            final Message message,
-            final ResourceIdentifier target,
-            final JsonObject defaults,
-            final long maxTtl) {
-
-        defaults.forEach(prop -> {
-
-            switch (prop.getKey()) {
-            case MessageHelper.SYS_HEADER_PROPERTY_TTL:
-                final boolean isEvent = target.getEndpoint().equals(EventConstants.EVENT_ENDPOINT);
-                if (isEvent && message.getTtl() == 0 && Number.class.isInstance(prop.getValue())) {
-                    final long defaultTtl = ((Number) prop.getValue()).longValue();
-                    if (maxTtl != TenantConstants.UNLIMITED_TTL && defaultTtl > maxTtl) {
-                        MessageHelper.setTimeToLive(message, Duration.ofSeconds(maxTtl));
-                    } else {
-                        MessageHelper.setTimeToLive(message, Duration.ofSeconds(defaultTtl));
-                    }
-                }
-                break;
-            case MessageHelper.SYS_PROPERTY_CONTENT_TYPE:
-                if (Strings.isNullOrEmpty(message.getContentType()) && String.class.isInstance(prop.getValue())) {
-                    // set to default type registered for device or fall back to default content type
-                    message.setContentType((String) prop.getValue());
-                }
-                break;
-            case MessageHelper.SYS_PROPERTY_CONTENT_ENCODING:
-                if (Strings.isNullOrEmpty(message.getContentEncoding()) && String.class.isInstance(prop.getValue())) {
-                    message.setContentEncoding((String) prop.getValue());
-                }
-                break;
-            case MessageHelper.SYS_HEADER_PROPERTY_DELIVERY_COUNT:
-            case MessageHelper.SYS_HEADER_PROPERTY_DURABLE:
-            case MessageHelper.SYS_HEADER_PROPERTY_FIRST_ACQUIRER:
-            case MessageHelper.SYS_HEADER_PROPERTY_PRIORITY:
-            case MessageHelper.SYS_PROPERTY_ABSOLUTE_EXPIRY_TIME:
-            case MessageHelper.SYS_PROPERTY_CORRELATION_ID:
-            case MessageHelper.SYS_PROPERTY_CREATION_TIME:
-            case MessageHelper.SYS_PROPERTY_GROUP_ID:
-            case MessageHelper.SYS_PROPERTY_GROUP_SEQUENCE:
-            case MessageHelper.SYS_PROPERTY_MESSAGE_ID:
-            case MessageHelper.SYS_PROPERTY_REPLY_TO:
-            case MessageHelper.SYS_PROPERTY_REPLY_TO_GROUP_ID:
-            case MessageHelper.SYS_PROPERTY_SUBJECT:
-            case MessageHelper.SYS_PROPERTY_TO:
-            case MessageHelper.SYS_PROPERTY_USER_ID:
-                // these standard properties cannot be set using defaults
-                LOG.debug("ignoring default property [{}] registered for device", prop.getKey());
-                break;
-            default:
-                // add all other defaults as application properties
-                MessageHelper.addProperty(message, prop.getKey(), prop.getValue());
-            }
-        });
+        return MessageHelper.addProperties(
+                msg,
+                target,
+                publishAddress,
+                tenant,
+                registrationInfo.getJsonObject(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS),
+                timeUntilDisconnect,
+                timeToLive,
+                getTypeName(),
+                getConfig().isDefaultsEnabled(),
+                getConfig().isJmsVendorPropsEnabled());
     }
 
     /**
@@ -1573,7 +1448,7 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
             final String deviceId,
             final BiConsumer<ProtonDelivery, Message> commandMessageConsumer) {
 
-        LOG.debug("command consumer closed [tenantId: {}, deviceId: {}] - no command will be received for this device anymore",
+        log.debug("command consumer closed [tenantId: {}, deviceId: {}] - no command will be received for this device anymore",
                 tenant, deviceId);
     }
 
@@ -1593,7 +1468,7 @@ public abstract class AbstractProtocolAdapterBase<T extends ProtocolAdapterPrope
                     procedure.complete(Status.OK());
                 });
             } else {
-                LOG.info("Protocol Adapter - HealthCheck Server context match. Assume protocol adapter is alive.");
+                log.info("Protocol Adapter - HealthCheck Server context match. Assume protocol adapter is alive.");
                 procedure.complete(Status.OK());
             }
         });

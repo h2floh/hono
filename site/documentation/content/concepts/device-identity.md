@@ -12,21 +12,22 @@ Hono does not make any assumptions about the format of a device identifier (or *
 
 ## Tenant
 
-Hono supports the logical partitioning of devices into groups called *tenants*. Each tenant has a unique identifier, a string called the *tenant-id*, and can be used to provide a logical grouping of devices belonging e.g. to the same application scope or organizational unit. Each device can thus be uniquely identified by the tuple (*tenant-id*, *device-id*). This tuple is broadly used throughout Hono's APIs when addressing a particular device.
+Hono supports the logical partitioning of devices into groups called [*tenants*]({{< relref "/concepts/tenancy" >}}). Each tenant has a unique identifier, a string called the *tenant-id*, and can be used to provide a logical grouping of devices belonging e.g. to the same application scope or organizational unit. Each device can thus be uniquely identified by the tuple (*tenant-id*, *device-id*). This tuple is broadly used throughout Hono's APIs when addressing a particular device.
 
 ## Device Registration
 
-Hono components use the [Device Registration API]({{< relref "/api/device-registration" >}}) to access device registration information. The API defines the mandatory to implement *assert Registration* operation for verifying a device's registration status. In addition to that, it defines optional CRUD operations to register, update and remove device registration information. These operations are optional because Hono components do not require them during runtime. From a Hono perspective, it is not important how devices have been registered or how they are managed.
+Hono components use the [Device Registration API]({{< relref "/api/device-registration" >}}) to access device registration information. The API defines the *assert Registration* operation for verifying a device's registration status.
+In many real world scenarios there will already be a component in place which keeps track of devices and which supports the particular *provisioning process* being used to bring devices into life. In such cases it makes sense to simply implement the Device Registration API as a *facade* on top of the existing component.
 
-In many real world scenarios there will already be a component in place which keeps track of devices and which supports the particular *provisioning process* being used to bring devices into life. In such cases it makes sense to simply implement the mandatory operation of Hono's Device Registration API as a *facade* on top of the existing component.
+In addition to that, Hono defines a [Device Registry Management API]({{< relref "/api/management" >}}), which can be implemented to take advantage of standardized  operations for managing devices and credentials. This API is optional because Hono components do not require it during runtime. 
 
-For demonstration purposes, Hono comes with a [simple default implementation]({{< relref "/admin-guide/device-registry-config.md" >}}) of the Device Registration API which keeps all data in memory only. This component implements all mandatory and optional operations but is not supposed to be used in production scenarios.
+For demonstration purposes, Hono comes with a [simple default implementation]({{< relref "/admin-guide/device-registry-config.md" >}}) of both APIs which keeps all data in memory only. Therefore it is not supposed to be used in production scenarios. For the future, it is planned that a production-ready Device Registry will be released as part of Hono that implements both APIs.
 
 ## Device Authentication
 
 Devices connect to protocol adapters in order to publish telemetry data or events. Downstream applications consuming this data often take particular actions based on the content of the messages. Such actions may include simply updating some statistics, e.g. tracking the average room temperature, but may also trigger more serious activities like shutting down a power plant. It is therefore important that applications can rely on the fact that the messages they process have in fact been produced by the device indicated by a message's source address.
 
-Hono relies on protocol adapters to establish a device's identity before it is allowed to publish telemetry data or send events. Conceptually, Hono distinguishes between two identities
+Hono relies on protocol adapters to establish a device's identity before it is allowed to publish downstream data or receive commands. Conceptually, Hono distinguishes between two identities
 
 1. an identity associated with the authentication credentials (termed the *authentication identity* or *auth-id*), and
 1. an identity to act as (the *device identity* or *device-id*).
