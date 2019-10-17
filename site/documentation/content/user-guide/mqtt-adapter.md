@@ -42,6 +42,9 @@ After verifying the credentials, the number of existing connections is checked a
 
 Before accepting any telemetry or event or command messages, the MQTT adapter verifies that the configured [message limit] ({{< relref "/concepts/resource-limits.md" >}}) is not exceeded. The incoming message is discarded if the limit is exceeded. 
 
+## Connection Event
+The MQTT Adapter can send a [Connection Event]({{< relref "/api/event#connection-event" >}}) once the connection with a device has been successfully established or ended. Note that this requires the [`HONO_CONNECTION_EVENTS_PRODUCER`]({{< relref "/admin-guide/mqtt-adapter-config#service-configuration" >}}) configuration property to be explicitly set to `events`.
+
 ## Publishing Telemetry Data
 
 The MQTT adapter supports the publishing of telemetry data by means of MQTT *PUBLISH* packets using either QoS 0 or QoS 1.
@@ -67,14 +70,18 @@ This is the preferred way for devices to publish telemetry data. It is available
 
 Publish some JSON data for device `4711`:
 
-    mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t telemetry -m '{"temp": 5}'
+```sh
+mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t telemetry -m '{"temp": 5}'
+```
 
 Publish some JSON data for device `4711` using a client certificate for authentication:
 
-    # in base directory of Hono repository:
-    mosquitto_pub -p 8883 -t telemetry -m '{"temp": 5}' --cert demo-certs/certs/device-4711-cert.pem --key demo-certs/certs/device-4711-key.pem --cafile demo-certs/certs/trusted-certs.pem
+```sh
+# in base directory of Hono repository:
+mosquitto_pub -p 8883 -t telemetry -m '{"temp": 5}' --cert demo-certs/certs/device-4711-cert.pem --key demo-certs/certs/device-4711-key.pem --cafile demo-certs/certs/trusted-certs.pem
+```
 
-**NB**: The example above assumes that the MQTT adapter is [configured for TLS]({{< ref "/admin-guide/secure_communication.md#mqtt-adapter" >}}) and the secure port is used.
+**NB** The example above assumes that the MQTT adapter is [configured for TLS]({{< ref "/admin-guide/secure_communication.md#mqtt-adapter" >}}) and the secure port is used.
 
 ## Publish Telemetry Data (unauthenticated Device)
 
@@ -90,8 +97,9 @@ This topic can be used by devices that have not authenticated to the protocol ad
 
 Publish some JSON data for device `4711`:
 
-    mosquitto_pub -t telemetry/DEFAULT_TENANT/4711 -m '{"temp": 5}'
-
+```sh
+mosquitto_pub -t telemetry/DEFAULT_TENANT/4711 -m '{"temp": 5}'
+```
 
 ## Publish Telemetry Data (authenticated Gateway)
 
@@ -108,9 +116,11 @@ The protocol adapter checks the gateway's authority to publish data on behalf of
 
 Publish some JSON data for device `4712` via gateway `gw-1`:
 
-    mosquitto_pub -u 'gw@DEFAULT_TENANT' -P gw-secret -t telemetry/DEFAULT_TENANT/4712 -m '{"temp": 5}'
+```sh
+mosquitto_pub -u 'gw@DEFAULT_TENANT' -P gw-secret -t telemetry/DEFAULT_TENANT/4712 -m '{"temp": 5}'
+```
 
-**NB**: The example above assumes that a gateway device with ID `gw-1` has been registered with `hashed-password` credentials with *auth-id* `gw` and password `gw-secret`.
+**NB** The example above assumes that a gateway device with ID `gw-1` has been registered with `hashed-password` credentials with *auth-id* `gw` and password `gw-secret`.
 
 ## Publishing Events
 
@@ -123,6 +133,10 @@ This requires that
 * the events published by the client comply with the format defined by the Event API.
 
 The protocol adapter checks the configured [message limit] ({{< relref "/concepts/resource-limits.md" >}}) before accepting any event messages. If the message limit is exceeded or the incoming event message cannot be processed, the connection to the client is closed.
+
+The devices can optionally indicate a *time-to-live* duration for event messages by setting the *hono-ttl* property explicitly in the `property-bag`. The `property-bag` is an optional collection of properties intended for the receiver of the message. A property bag is only allowed at the very end of a topic. It always starts with a `/?` character, followed by pairs of URL encoded property names and values that are separated by `&`. For example, a property bag containing two properties *seqNo* and *importance* looks like this: `/topic/name/?seqNo=10034&importance=high`.
+
+The MQTT adapter currently does not use any properties except *hono-ttl*.
 
 ## Publish an Event (authenticated Device)
 
@@ -137,7 +151,15 @@ This is the preferred way for devices to publish events. It is available only if
 
 Upload a JSON string for device `4711`:
 
-    mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t event -q 1 -m '{"alarm": 1}'
+```sh
+mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t event -q 1 -m '{"alarm": 1}'
+```
+
+Upload a JSON string for device `4711` with `time-to-live` as 10 seconds:
+
+```sh
+mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t event/?hono-ttl=10 -q 1 -m '{"alarm": 1}'
+```
 
 ## Publish an Event (unauthenticated Device)
 
@@ -153,7 +175,15 @@ This topic can be used by devices that have not authenticated to the protocol ad
 
 Publish some JSON data for device `4711`:
 
-    mosquitto_pub -t event/DEFAULT_TENANT/4711 -q 1 -m '{"alarm": 1}'
+```sh
+mosquitto_pub -t event/DEFAULT_TENANT/4711 -q 1 -m '{"alarm": 1}'
+```
+
+Publish some JSON data for device `4711` with `time-to-live` as 15 seconds:
+
+```sh
+mosquitto_pub -t event/DEFAULT_TENANT/4711/?hono-ttl=15 -q 1 -m '{"alarm": 1}'
+```
 
 ## Publish an Event (authenticated Gateway)
 
@@ -170,9 +200,11 @@ The protocol adapter checks the gateway's authority to publish data on behalf of
 
 Publish some JSON data for device `4712` via gateway `gw-1`:
 
-    mosquitto_pub -u 'gw@DEFAULT_TENANT' -P gw-secret -t event/DEFAULT_TENANT/4712 -q 1 -m '{"temp": 5}'
+```sh
+mosquitto_pub -u 'gw@DEFAULT_TENANT' -P gw-secret -t event/DEFAULT_TENANT/4712 -q 1 -m '{"temp": 5}'
+```
 
-**NB**: The example above assumes that a gateway device with ID `gw-1` has been registered with `hashed-password` credentials with *auth-id* `gw` and password `gw-secret`.
+**NB** The example above assumes that a gateway device with ID `gw-1` has been registered with `hashed-password` credentials with *auth-id* `gw` and password `gw-secret`.
 
 ## Command & Control
 
@@ -192,96 +224,173 @@ The following sections define the topic filters/names to use for subscribing to 
 * `q` instead of `req`
 * `s` instead of `res`
 
-{{% note %}}
-Previous versions of Hono used `control` instead of `command` as topic prefix. Using the `control` prefix is still supported but deprecated. 
+{{% note title="Deprecation" %}}
+Previous versions of Hono required devices to use `control` instead of `command` as the topic prefix.
+The `control` prefix is deprecated. Devices MAY still use it until support for it will be removed in a future Hono version.
 {{% /note %}}
 
 The following variables are used:
 
-* `${command}` : is an arbitrary string that indicates the command to execute, e.g. `setBrightness`. The command is provided by the application that sends the command.
-* `${req-id}` (only for *Request/Response* commands) : denotes the unique identifier of the command execution request and is passed to the device as part of the name of the topic that the command is published to. The device needs to publish its response to the command to a topic which includes this identifier, thus allowing the adapter to correlate the response with the request.
-* `${status}` : is the HTTP status code indicating the outcome of executing the command. This status code is passed on to the application in the AMQP message's *status* header.
-
-The `property-bag` is an optional collection of properties intended for the receiver of the message. A property bag is only allowed at the very end of a topic. It always starts with a `?` character, followed by pairs of URL encoded property names and values that are separated by `&`. The following example shows a property bag that contains two properties *seqNo* and *importance*:
-
-    /topic/name/?seqNo=10034&importance="high"
-
-The MQTT adapter currently does not require nor use any properties.
+* `${command}` : An arbitrary string that indicates the command to execute, e.g. `setBrightness`. The command is provided by the application that sends the command.
+* `${req-id}` (only for *Request/Response* commands) : The unique identifier of the command execution request. The identifier is passed to the device as part of the name of the topic that the command is published to. The device needs to publish its response to the command to a topic which includes this identifier, thus allowing the adapter to correlate the response with the request.
+* `${status}` : The HTTP status code indicating the outcome of executing the command. This status code is passed on to the application in the AMQP message's *status* application property.
 
 ### Receiving Commands (authenticated Device)
 
-An authenticated device MUST use the following topic filter to subscribe to commands:
+An authenticated device MUST use the topic filter `command///req/#` to subscribe to commands.
 
-* `command/+/+/req/#`
-
-**Example**
-
-    mosquitto_sub -v -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t command/+/+/req/#
-
-The adapter will then publish commands for the device to topic:
-
-* for *Request/Response* commands: `command///req/${req-id}/${command}[/*][/property-bag]`
-* for *one-way* commands: `command///req//${command}[/*][/property-bag]`
-
+{{% note title="Deprecation" %}}
+Previous versions of Hono required authenticated devices to use `command/+/+/req/#` for subscribing to commands.
+This old topic filter is deprecated. Devices MAY still use it until support for it will be removed in a future Hono version.
+{{% /note %}}
 
 **Example**
 
-For example, if the [HonoExampleApplication]({{< relref "/dev-guide/java_client_consumer.md" >}}) was started, after the `ttd` event requested by the subscription of mosquitto_sub, it layers a command that arrives as follows:  
+```sh
+mosquitto_sub -v -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t command///req/#
+```
 
-    command///q/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/setBrightness {
-       "brightness" : 79
-    }
+The adapter will then publish *Request/Response* commands for the device to topic `command///req/${req-id}/${command}` and *one-way* commands to topic `command///req//${command}`.
 
-If the command is a *one-way* command, it will arrive as follows:
+For example, a request/response command with name `setBrightness` from an application might look like this:
 
-    command///q//setBrightness {
-       "brightness" : 79
-    }
+```plaintext
+command///q/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/setBrightness
+{
+  "brightness": 79
+}
+```
 
+A corresponding *one-way* command might look like this:
+
+```plaintext
+command///q//setBrightness
+{
+  "brightness": 79
+}
+```
+
+Note that the topic in the latter case doesn't contain a request identifier.
 
 ### Receiving Commands (unauthenticated Device)
 
-An unauthenticated device MUST use the following topic filter to subscribe to commands:
-
-* `command/${tenant-id}/${device-id}/req/#`
+An unauthenticated device MUST use the topic filter `command/${tenant-id}/${device-id}/req/#` to subscribe to commands.
 
 **Example**
 
-    mosquitto_sub -v -t command/DEFAULT_TENANT/4711/req/#
+```sh
+mosquitto_sub -v -t command/DEFAULT_TENANT/4711/req/#
+```
 
-The adapter will then publish *Request/Response* commands for the device to topic:
+The adapter will then publish *Request/Response* commands for the device to topic `command/${tenant-id}/${device-id}/req/${req-id}/${command}` and *one-way* commands to topic `command/${tenant-id}/${device-id}/req//${command}`.
 
-* `command/${tenant-id}/${device-id}/req/${req-id}/${command}[/*][/property-bag]`
+For example, a request/response command with name `setBrightness` from an application might look like this:
 
-and *one-way* commands to the topic:
+```plaintext
+command/DEFAULT_TENANT/4711/q/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/setBrightness
+{
+  "brightness": 79
+}
+```
 
-* `command/${tenant-id}/${device-id}/req//${command}[/*][/property-bag]`
+A corresponding *one-way* command might look like this:
 
-(For an example of the incoming command see above at authenticated device)
+```plaintext
+command/DEFAULT_TENANT/4711/q//setBrightness
+{
+  "brightness": 79
+}
+```
+
+Note that the topic in the latter case doesn't contain a request identifier.
+
+
+### Receiving Commands (authenticated Gateway)
+
+*Gateway* components can receive commands for devices which do not connect to a protocol adapter directly but instead are connected to the gateway, e.g. using some low-bandwidth radio based technology like [SigFox](https://www.sigfox.com) or [LoRa](https://www.lora-alliance.org/). Corresponding devices have to be configured so that they can be used with a gateway. See [Configuring Gateway Devices]({{< relref "/admin-guide/device-registry-config.md#configuring-gateway-devices" >}}) for details.
+
+If a device is configured in such a way that there can be *one* gateway, acting on behalf of the device, a command sent to this device will by default be directed to that gateway.
+
+If a device is configured to be used with *multiple* gateways, the particular gateway that last acted on behalf of the device will be the target that commands for that device will be routed to. The mapping of device and gateway last used by the device is updated whenever a device sends a telemetry, event or command response message via the gateway. This means that for a device configured to be used via multiple gateways to receive commands, the device first has to send at least one telemetry or event message to establish which gateway to use for receiving commands for that device.
+
+An authenticated gateway MUST use the topic filter `command//+/req/#` to subscribe to commands for all devices in whose behalf it acts.
+
+To subscribe only to commands for a specific device, an authenticated gateway MUST use the topic filter `command//${device-id}/req/#`.
+
+{{% note title="Deprecation" %}}
+Previous versions of Hono required authenticated gateways to use `command/+/+/req/#` for subscribing to commands.
+This old topic filter is deprecated. Gateways MAY still use it until support for it will be removed in a future Hono version.
+{{% /note %}}
+
+**Example**
+
+A subscription to commands for all devices that a gateway acts on behalf of looks like this:
+```sh
+mosquitto_sub -v -u 'gw@DEFAULT_TENANT' -P gw-secret -t command//+/req/#
+```
+A subscription to commands for a specific device can be done like this:
+```sh
+mosquitto_sub -v -u 'gw@DEFAULT_TENANT' -P gw-secret -t command//4711/req/#
+```
+
+The adapter will then publish *Request/Response* commands for devices, that the gateway has acted on behalf of, to topic `command//${device-id}/req/${req-id}/${command}` and *one-way* commands to topic `command//${device-id}/req//${command}`.
+
+For example, a request/response command for device `4711` with name `setBrightness` from an application might look like this:
+
+```plaintext
+command//4711/q/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/setBrightness
+{
+  "brightness": 79
+}
+```
+
+A corresponding *one-way* command might look like this:
+
+```plaintext
+command//4711/q//setBrightness
+{
+  "brightness": 79
+}
+```
+
+Note that the topic in the latter case doesn't contain a request identifier.
+
 
 ### Sending a Response to a Command (authenticated Device)
 
-An authenticated device MUST send the response to a previously received command to the following topic:
-
-* `command///res/${req-id}/${status}`
+An authenticated device MUST send the response to a previously received command to the topic `command///res/${req-id}/${status}`.
 
 **Example**
 
 After a command has arrived as in the above example, you send a response using the arrived `${req-id}`:
 
-    mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t command///res/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/200 -m '{"lumen": 200}'
+```sh
+mosquitto_pub -u 'sensor1@DEFAULT_TENANT' -P hono-secret -t command///res/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/200 -m '{"lumen": 200}'
+```
 
 ### Sending a Response to a Command (unauthenticated Device)
 
-An unauthenticated device MUST send the response to a previously received command to the following topic:
-
-* `command/${tenant-id}/${device-id}/res/${req-id}/${status}`
+An unauthenticated device MUST send the response to a previously received command to the topic `command/${tenant-id}/${device-id}/res/${req-id}/${status}`.
 
 **Example**
 
 After a command has arrived as in the above example, you send a response using the arrived `${req-id}`:
 
-    mosquitto_pub -t command/DEFAULT_TENANT/4711/res/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/200 -m '{"lumen": 200}'
+```sh
+mosquitto_pub -t command/DEFAULT_TENANT/4711/res/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/200 -m '{"lumen": 200}'
+```
+
+### Sending a Response to a Command (authenticated Gateway)
+
+An authenticated gateway MUST send a device's response to a command it has received on behalf of the device to the topic `command//${device-id}/res/${req-id}/${status}`.
+
+**Example**
+
+After a command has arrived as in the above example, the response is sent using the `${req-id}` from the topic that the command had been published to:
+
+```sh
+mosquitto_pub -u 'gw@DEFAULT_TENANT' -P gw-secret -t command//4711/res/1010f8ab0b53-bd96-4d99-9d9c-56b868474a6a/200 -m '{"lumen": 200}'
+```
 
 ## Downstream Meta Data
 
@@ -301,6 +410,18 @@ The adapter also considers *defaults* registered for the device at either the [t
 3. Otherwise, if a default property of the same name is defined for the tenant that the device belongs to, that value is used.
 
 Note that of the standard AMQP 1.0 message properties only the *content-type* and *ttl* can be set this way to a default value.
+
+### Event Message Time-to-live
+
+Events published by devices will usually be persisted by the AMQP Messaging Network in order to support deferred delivery to downstream consumers.
+In most cases the AMQP Messaging Network can be configured with a maximum *time-to-live* to apply to the events so that the events will be removed
+from the persistent store if no consumer has attached to receive the event before the message expires.
+
+In order to support environments where the AMQP Messaging Network cannot be configured accordingly, the MQTT protocol adapter supports setting a
+downstream event message's *ttl* property based on the *hono-ttl* property set as *property-bag* at the end of the event topic.
+Also the default *ttl* and *max-ttl* values can be configured for a tenant/device as described in the [Tenant API]
+({{< relref "/api/tenant#resource-limits-configuration-format" >}}).
+
 
 ## Tenant specific Configuration
 

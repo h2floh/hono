@@ -34,6 +34,7 @@ The following table provides an overview of the configuration variables and corr
 | `HONO_KURA_NATIVE_TLS_REQUIRED`<br>`--hono.kura.nativeTlsRequired` | no | `false` | The server will probe for OpenSLL on startup if a secure port is configured. By default, the server will fall back to the JVM's default SSL engine if not available. However, if set to `true`, the server will fail to start at all in this case. |
 | `HONO_KURA_PORT`<br>`--hono.kura.port` | no | `8883` | The secure port that the protocol adapter should listen on.<br>See [Port Configuration]({{< relref "#port-configuration" >}}) below for details. |
 | `HONO_KURA_SECURE_PROTOCOLS`<br>`--hono.kura.secureProtocols` | no | `TLSv1.2` | A (comma separated) list of secure protocols that are supported when negotiating TLS sessions. Please refer to the [vert.x documentation](https://vertx.io/docs/vertx-core/java/#ssl) for a list of supported protocol names. |
+| `HONO_KURA_TENANT_IDLE_TIMEOUT`<br>`--hono.kura.tenantIdleTimeout` | no | `0ms` | The duration after which the protocol adapter removes local state of the tenant (e.g. open AMQP links) with an amount and a unit, e.g. `2h` for 2 hours. See the [Spring Boot documentation](https://docs.spring.io/spring-boot/docs/current/reference/html/boot-features-external-config.html#boot-features-external-config-conversion-duration) for an explanation of the format. The value `0ms` disables the timeout. |
 
 The variables only need to be set if the default values do not match your environment.
 
@@ -139,11 +140,11 @@ The following table provides an overview of the configuration variables and corr
 
 | Environment Variable<br>Command Line Option | Mandatory | Default Value | Description  |
 | :------------------------------------------ | :-------: | :------------ | :------------|
-| `HONO_PLAN_PROMETHEUS_BASED_HOST`<br>`--hono.plan.prometheusBased.host` | no | none | The host name or IP address of the Prometheus server to retrieve the metrics data from. This property needs to be set in order to enable the Prometheus based checks. |
-| `HONO_PLAN_PROMETHEUS_BASED_PORT`<br>`--hono.plan.prometheusBased.port` | no | `9090` | The port of the Prometheus server to retrieve metrics data from. |
-| `HONO_PLAN_PROMETHEUS_BASED_CACHE_MIN_SIZE`<br>`--hono.plan.prometheusBased.cacheMinSize` | no | `20` | The minimum size of the cache to store the metrics data retrieved from the Prometheus server. The cache is used for storing the current amount of data exchanged with devices of tenants. |
-| `HONO_PLAN_PROMETHEUS_BASED_CACHE_MAX_SIZE`<br>`--hono.plan.prometheusBased.cacheMaxSize` | no | `1000` | The maximum size of the cache to store the metrics data retrieved from the Prometheus server. |
-| `HONO_PLAN_PROMETHEUS_BASED_CACHE_TIMEOUT`<br>`--hono.plan.prometheusBased.cacheTimeout` | no | `600` | The number of seconds after which the cached metrics data should be considered invalid. |
+| `HONO_RESOURCE_LIMITS_PROMETHEUS_BASED_HOST`<br>`--hono.resourceLimits.prometheusBased.host` | no | none | The host name or IP address of the Prometheus server to retrieve the metrics data from. This property needs to be set in order to enable the Prometheus based checks. |
+| `HONO_RESOURCE_LIMITS_PROMETHEUS_BASED_PORT`<br>`--hono.resourceLimits.prometheusBased.port` | no | `9090` | The port of the Prometheus server to retrieve metrics data from. |
+| `HONO_RESOURCE_LIMITS_PROMETHEUS_BASED_CACHE_MIN_SIZE`<br>`--hono.resourceLimits.prometheusBased.cacheMinSize` | no | `20` | The minimum size of the cache to store the metrics data retrieved from the Prometheus server. The cache is used for storing the current amount of data exchanged with devices of tenants. |
+| `HONO_RESOURCE_LIMITS_PROMETHEUS_BASED_CACHE_MAX_SIZE`<br>`--hono.resourceLimits.prometheusBased.cacheMaxSize` | no | `1000` | The maximum size of the cache to store the metrics data retrieved from the Prometheus server. |
+| `HONO_RESOURCE_LIMITS_PROMETHEUS_BASED_CACHE_TIMEOUT`<br>`--hono.resourceLimits.prometheusBased.cacheTimeout` | no | `600` | The number of seconds after which the cached metrics data should be considered invalid. |
 
 
 ## Metrics Configuration

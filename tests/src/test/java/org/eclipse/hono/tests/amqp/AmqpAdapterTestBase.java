@@ -11,11 +11,13 @@
  * SPDX-License-Identifier: EPL-2.0
  *******************************************************************************/
 package org.eclipse.hono.tests.amqp;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.eclipse.hono.tests.IntegrationTestSupport;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.rules.TestName;
+import org.eclipse.hono.util.Constants;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +26,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.net.PemTrustOptions;
 import io.vertx.core.net.SelfSignedCertificate;
-import io.vertx.ext.unit.TestContext;
+import io.vertx.junit5.VertxTestContext;
 import io.vertx.proton.ProtonClient;
 import io.vertx.proton.ProtonClientOptions;
 import io.vertx.proton.ProtonConnection;
@@ -53,12 +55,6 @@ public abstract class AmqpAdapterTestBase {
     protected static ProtonClientOptions defaultOptions;
 
     /**
-     * Support outputting current test's name.
-     */
-    @Rule
-    public TestName testName = new TestName();
-
-    /**
      * A logger to be used by subclasses.
      */
     protected final Logger log = LoggerFactory.getLogger(getClass());
@@ -77,16 +73,19 @@ public abstract class AmqpAdapterTestBase {
      * 
      * @param ctx The Vert.x test context.
      */
-    @BeforeClass
-    public static void setup(final TestContext ctx) {
+    @BeforeAll
+    public static void setup(final VertxTestContext ctx) {
+
         VERTX = Vertx.vertx();
-        helper = new IntegrationTestSupport(VERTX);
-        helper.init(ctx);
 
         defaultOptions = new ProtonClientOptions()
                 .setTrustOptions(new PemTrustOptions().addCertPath(IntegrationTestSupport.TRUST_STORE_PATH))
                 .setHostnameVerificationAlgorithm("")
                 .setSsl(true);
+
+        helper = new IntegrationTestSupport(VERTX);
+        helper.init().setHandler(ctx.completing());
+
     }
 
     /**
@@ -94,10 +93,14 @@ public abstract class AmqpAdapterTestBase {
      * 
      * @param ctx The Vert.x test context.
      */
-    @AfterClass
-    public static void disconnect(final TestContext ctx) {
-        helper.disconnect(ctx);
-        VERTX.close(ctx.asyncAssertSuccess());
+    @AfterAll
+    public static void disconnect(final VertxTestContext ctx) {
+        helper.disconnect()
+        .compose(ok -> {
+            final Future<Void> closeAttempt = Future.future();
+            VERTX.close(closeAttempt);
+            return closeAttempt;
+        }).setHandler(ctx.completing());
     }
 
     /**
@@ -106,6 +109,7 @@ public abstract class AmqpAdapterTestBase {
      * @param target The target address to create the sender for or {@code null}
      *               if an anonymous sender should be created.
      * @return A future succeeding with the created sender.
+     * @throws NullPointerException if qos is {@code null}.
      */
     protected Future<ProtonSender> createProducer(final String target) {
 
@@ -115,6 +119,7 @@ public abstract class AmqpAdapterTestBase {
         } else {
             context.runOnContext(go -> {
                 final ProtonSender sender = connection.createSender(target);
+                // vertx-proton doesn't support MIXED yet
                 sender.setQoS(ProtonQoS.AT_LEAST_ONCE);
                 sender.closeHandler(remoteClose -> {
                     if (remoteClose.failed()) {
@@ -124,7 +129,7 @@ public abstract class AmqpAdapterTestBase {
                 });
                 sender.openHandler(remoteAttach -> {
                     if (remoteAttach.failed()) {
-                        log.info("peer rejects opening of sender link [exception: {}]", remoteAttach.cause().getClass().getName());
+                        log.info("peer rejects opening of sender link", remoteAttach.cause());
                         result.fail(remoteAttach.cause());
                     } else if (sender.getRemoteTarget() == null) {
                         log.info("peer wants to immediately close sender link");
@@ -190,12 +195,15 @@ public abstract class AmqpAdapterTestBase {
     private Future<ProtonConnection> handleConnectAttempt(final ProtonConnection unopenedConnection) {
 
         final Future<ProtonConnection> result = Future.future();
+
         unopenedConnection.openHandler(result);
         unopenedConnection.closeHandler(remoteClose -> {
             unopenedConnection.close();
         });
         unopenedConnection.open();
+
         return result.map(con -> {
+            assertThat(unopenedConnection.getRemoteOfferedCapabilities()).contains(Constants.CAP_ANONYMOUS_RELAY);
             this.context = Vertx.currentContext();
             this.connection = unopenedConnection;
             return con;

@@ -34,9 +34,11 @@
     <appender-ref ref="STDOUT" />
   </root>
 
+  <logger name="org.eclipse.hono.client.impl.HonoConnectionImpl" level="ERROR"/>
   <logger name="org.eclipse.hono" level="INFO"/>
   <logger name="org.eclipse.hono.client" level="INFO"/>
   <logger name="org.eclipse.hono.client.impl" level="INFO"/>
+  <logger name="org.eclipse.hono.connection" level="INFO"/>
   <logger name="org.eclipse.hono.tests" level="INFO"/>
   <logger name="org.eclipse.hono.tests.CrudHttpClient" level="INFO"/>
   <logger name="org.eclipse.hono.tests.amqp" level="INFO"/>

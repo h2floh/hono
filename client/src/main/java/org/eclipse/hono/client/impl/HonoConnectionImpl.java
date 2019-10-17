@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.net.ssl.SSLException;
 import javax.security.sasl.AuthenticationException;
 
 import org.apache.qpid.proton.amqp.Symbol;
@@ -38,6 +39,7 @@ import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.client.StatusCodeMapper;
 import org.eclipse.hono.config.ClientConfigProperties;
 import org.eclipse.hono.connection.ConnectionFactory;
+import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.HonoProtonHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -233,7 +235,6 @@ public class HonoConnectionImpl implements HonoConnection {
      */
     @Override
     public final Future<Void> isConnected() {
-
         return executeOrRunOnContext(result -> checkConnected(result));
     }
 
@@ -243,7 +244,6 @@ public class HonoConnectionImpl implements HonoConnection {
      * @return A succeeded future if this client is connected.
      */
     protected final Future<Void> checkConnected() {
-
         final Future<Void> result = Future.future();
         checkConnected(result);
         return result;
@@ -368,11 +368,7 @@ public class HonoConnectionImpl implements HonoConnection {
                         conAttempt -> {
                             connecting.compareAndSet(true, false);
                             if (conAttempt.failed()) {
-                                if (isTerminalConnectionError(conAttempt.cause())) {
-                                    failConnectionAttempt(conAttempt.cause(), connectionHandler);
-                                } else {
-                                    reconnect(conAttempt.cause(), connectionHandler, disconnectHandler);
-                                }
+                                reconnect(conAttempt.cause(), connectionHandler, disconnectHandler);
                             } else {
                                 final ProtonConnection newConnection = conAttempt.result();
                                 if (shuttingDown.get()) {
@@ -443,7 +439,7 @@ public class HonoConnectionImpl implements HonoConnection {
 
     private void notifyReconnectHandlers(final AsyncResult<HonoConnection> reconnectAttempt) {
         if (reconnectAttempt.succeeded()) {
-            for (ReconnectListener<HonoConnection> listener : reconnectListeners) {
+            for (final ReconnectListener<HonoConnection> listener : reconnectListeners) {
                 listener.onReconnect(this);
             }
         }
@@ -463,7 +459,7 @@ public class HonoConnectionImpl implements HonoConnection {
 
     private void notifyDisconnectHandlers() {
 
-        for (DisconnectListener<HonoConnection> listener : disconnectListeners) {
+        for (final DisconnectListener<HonoConnection> listener : disconnectListeners) {
             listener.onDisconnect(this);
         }
     }
@@ -493,7 +489,7 @@ public class HonoConnectionImpl implements HonoConnection {
 
         } else {
             if (connectionFailureCause != null) {
-                log.debug("connection attempt failed", connectionFailureCause);
+                logConnectionError(connectionFailureCause);
             }
             // apply exponential backoff with jitter
             // determine the max delay for this reconnect attempt as 2^attempt * delayIncrement
@@ -519,9 +515,23 @@ public class HonoConnectionImpl implements HonoConnection {
         }
     }
 
-    private boolean isTerminalConnectionError(final Throwable connectionFailureCause) {
+    /**
+     * Log the connection error.
+     * 
+     * @param connectionFailureCause The connection error to log, never is {@code null}.
+     */
+    private void logConnectionError(final Throwable connectionFailureCause) {
+        if (isNoteworthyError(connectionFailureCause)) {
+            log.warn("connection attempt failed", connectionFailureCause);
+        } else {
+            log.debug("connection attempt failed", connectionFailureCause);
+        }
+    }
 
-        return connectionFailureCause instanceof AuthenticationException ||
+    private boolean isNoteworthyError(final Throwable connectionFailureCause) {
+
+        return connectionFailureCause instanceof SSLException ||
+                connectionFailureCause instanceof AuthenticationException ||
                 connectionFailureCause instanceof MechanismMismatchException ||
                 (connectionFailureCause instanceof SaslSystemException && ((SaslSystemException) connectionFailureCause).isPermanent());
     }
@@ -541,6 +551,11 @@ public class HonoConnectionImpl implements HonoConnection {
         } else if (connectionFailureCause instanceof MechanismMismatchException) {
             connectionHandler.handle(Future.failedFuture(
                     new ClientErrorException(HttpURLConnection.HTTP_UNAUTHORIZED, "no suitable SASL mechanism found for authentication with server")));
+        } else if (connectionFailureCause instanceof SSLException) {
+            connectionHandler.handle(Future.failedFuture(
+                    new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST,
+                            "TLS handshake with server failed: " + connectionFailureCause.getMessage(),
+                            connectionFailureCause)));
         } else {
             connectionHandler.handle(Future.failedFuture(
                     new ServerErrorException(HttpURLConnection.HTTP_UNAVAILABLE, "failed to connect",
@@ -584,12 +599,14 @@ public class HonoConnectionImpl implements HonoConnection {
     /**
      * Creates a sender link.
      * 
-     * @param targetAddress The target address of the link.
+     * @param targetAddress The target address of the link. If the address is {@code null}, the
+     *                      sender link will be established to the 'anonymous relay' and each
+     *                      message must specify its destination address.
      * @param qos The quality of service to use for the link.
      * @param closeHook The handler to invoke when the link is closed by the peer (may be {@code null}).
      * @return A future for the created link. The future will be completed once the link is open.
      *         The future will fail with a {@link ServiceInvocationException} if the link cannot be opened.
-     * @throws NullPointerException if any of the arguments other than close hook is {@code null}.
+     * @throws NullPointerException if qos is {@code null}.
      */
     @Override
     public final Future<ProtonSender> createSender(
@@ -597,11 +614,19 @@ public class HonoConnectionImpl implements HonoConnection {
             final ProtonQoS qos,
             final Handler<String> closeHook) {
 
-        Objects.requireNonNull(targetAddress);
         Objects.requireNonNull(qos);
 
         return executeOrRunOnContext(result -> {
             checkConnected().compose(v -> {
+
+                if (targetAddress == null && !supportsCapability(Constants.CAP_ANONYMOUS_RELAY)) {
+                    // AnonTerm spec requires peer to offer ANONYMOUS-RELAY capability
+                    // before a client can use anonymous terminus
+                    return Future.failedFuture(new ServerErrorException(
+                            HttpURLConnection.HTTP_NOT_IMPLEMENTED,
+                            "server does not support anonymous terminus"));
+                }
+
                 final Future<ProtonSender> senderFuture = Future.future();
                 final ProtonSender sender = connection.createSender(targetAddress);
                 sender.setQoS(qos);

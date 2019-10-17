@@ -13,6 +13,10 @@
 
 package org.eclipse.hono.tests.mqtt;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -23,23 +27,22 @@ import org.eclipse.hono.service.management.tenant.Tenant;
 import org.eclipse.hono.tests.IntegrationTestSupport;
 import org.eclipse.hono.util.EventConstants;
 import org.eclipse.hono.util.MessageHelper;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import io.netty.handler.codec.mqtt.MqttQoS;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.ext.unit.Async;
-import io.vertx.ext.unit.TestContext;
-import io.vertx.ext.unit.junit.VertxUnitRunner;
+import io.vertx.junit5.VertxExtension;
+import io.vertx.junit5.VertxTestContext;
 
 
 /**
  * Integration tests for uploading events to the MQTT adapter.
  *
  */
-@RunWith(VertxUnitRunner.class)
+@ExtendWith(VertxExtension.class)
 public class EventMqttIT extends MqttPublishTestBase {
 
     private static final String TOPIC_TEMPLATE = "%s/%s/%s";
@@ -83,30 +86,34 @@ public class EventMqttIT extends MqttPublishTestBase {
     }
 
     @Override
-    protected void assertAdditionalMessageProperties(final TestContext ctx, final Message msg) {
+    protected void assertAdditionalMessageProperties(final VertxTestContext ctx, final Message msg) {
         // assert that events are marked as "durable"
-        ctx.assertTrue(msg.isDurable());
+        ctx.verify(() -> assertThat(msg.isDurable()).isTrue());
     }
 
     /**
-     * Verifies that an event frmo a device for which a default TTL has been
+     * Verifies that an event from a device for which a default TTL has been
      * specified cannot be consumed after the TTL has expired.
      * 
      * @param ctx The vert.x test context.
+     * @throws InterruptedException if test execution gets interrupted.
      */
     @Test
-    public void testMessagesExpire(final TestContext ctx) {
+    public void testMessagesExpire(final VertxTestContext ctx) throws InterruptedException {
 
         // GIVEN a tenant for which all messages have a TTL of 500ms
         final String tenantId = helper.getRandomTenantId();
         final String deviceId = helper.getRandomDeviceId(tenantId);
         final Tenant tenant = new Tenant();
-        tenant.getDefaults().put(MessageHelper.SYS_HEADER_PROPERTY_TTL, 500);
-        final Async setup = ctx.async();
+        tenant.setDefaults(Map.of(MessageHelper.SYS_HEADER_PROPERTY_TTL, 3)); // seconds
+        final VertxTestContext setup = new VertxTestContext();
 
-        helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, "secret")
-        .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, "secret").setHandler(setup.completing());
+
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+        }
 
         // WHEN a device that belongs to the tenant publishes an event
         final AtomicInteger receivedMessageCount = new AtomicInteger(0);
@@ -120,7 +127,7 @@ public class EventMqttIT extends MqttPublishTestBase {
             }
         })).compose(ok -> {
             final Future<MessageConsumer> consumerCreated = Future.future();
-            VERTX.setTimer(1000, tid -> {
+            VERTX.setTimer(4000, tid -> {
                 LOGGER.info("opening event consumer for tenant [{}]", tenantId);
                 // THEN no messages can be consumed after the TTL has expired
                 createConsumer(tenantId, msg -> receivedMessageCount.incrementAndGet())
@@ -129,7 +136,7 @@ public class EventMqttIT extends MqttPublishTestBase {
             return consumerCreated;
         }).compose(c -> {
             final Future<Void> done = Future.future();
-            VERTX.setTimer(500, tid -> {
+            VERTX.setTimer(1000, tid -> {
                 if (receivedMessageCount.get() > 0) {
                     done.fail(new IllegalStateException("should not have received any events after TTL has expired"));
                 } else {
@@ -137,6 +144,6 @@ public class EventMqttIT extends MqttPublishTestBase {
                 }
             });
             return done;
-        }).setHandler(ctx.asyncAssertSuccess());
+        }).setHandler(ctx.completing());
     }
 }

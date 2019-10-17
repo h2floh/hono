@@ -13,6 +13,7 @@
 
 package org.eclipse.hono.adapter.lora.providers;
 
+import io.vertx.core.json.JsonArray;
 import org.eclipse.hono.adapter.lora.LoraConstants;
 import org.eclipse.hono.adapter.lora.LoraMessageType;
 import org.springframework.stereotype.Component;
@@ -36,10 +37,13 @@ public class ActilityProvider implements LoraProvider {
     private static final String FIELD_ACTILITY_CHANNEL = "Channel";
     private static final String FIELD_ACTILITY_SUB_BAND = "SubBand";
     private static final String FIELD_ACTILITY_SPREADING_FACTOR = "SpFact";
-    private static final String FIELD_ACTILITY_LRR_SNR = "LrrRSSI";
+    private static final String FIELD_ACTILITY_LRR_SNR = "LrrSNR";
     private static final String FIELD_ACTILITY_FPORT = "FPort";
     private static final String FIELD_ACTILITY_LATITUTDE = "LrrLAT";
     private static final String FIELD_ACTILITY_LONGITUDE = "LrrLON";
+    private static final String FIELD_ACTILITY_LRRS = "Lrrs";
+    private static final String FIELD_ACTILITY_LRR = "Lrr";
+    private static final String FIELD_ACTILITY_LRR_ID = "Lrrid";
 
     @Override
     public String getProviderName() {
@@ -75,32 +79,62 @@ public class ActilityProvider implements LoraProvider {
     @Override
     public Map<String, Object> extractNormalizedData(final JsonObject loraMessage) {
         final Map<String, Object> returnMap = new HashMap<>();
-        if (loraMessage.containsKey(FIELD_ACTILITY_LRR_RSSI)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_RSS, Math.abs(loraMessage.getDouble(FIELD_ACTILITY_LRR_RSSI)));
+        final JsonObject rootObject = loraMessage.getJsonObject(FIELD_ACTILITY_ROOT_OBJECT, new JsonObject());
+        if (rootObject.containsKey(FIELD_ACTILITY_LRR_RSSI)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_RSS,
+                    Math.abs(Double.valueOf(rootObject.getString(FIELD_ACTILITY_LRR_RSSI))));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_TX_POWER)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_TX_POWER, loraMessage.getDouble(FIELD_ACTILITY_TX_POWER));
+        if (rootObject.containsKey(FIELD_ACTILITY_TX_POWER)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_TX_POWER,
+                    rootObject.getDouble(FIELD_ACTILITY_TX_POWER));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_CHANNEL)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_CHANNEL, loraMessage.getString(FIELD_ACTILITY_CHANNEL));
+        if (rootObject.containsKey(FIELD_ACTILITY_CHANNEL)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_CHANNEL, rootObject.getString(FIELD_ACTILITY_CHANNEL));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_SUB_BAND)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_SUB_BAND, loraMessage.getString(FIELD_ACTILITY_SUB_BAND));
+        if (rootObject.containsKey(FIELD_ACTILITY_SUB_BAND)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_SUB_BAND, rootObject.getString(FIELD_ACTILITY_SUB_BAND));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_SPREADING_FACTOR)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_SPREADING_FACTOR, loraMessage.getInteger(FIELD_ACTILITY_SPREADING_FACTOR));
+        if (rootObject.containsKey(FIELD_ACTILITY_SPREADING_FACTOR)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_SPREADING_FACTOR,
+                    Integer.valueOf(rootObject.getString(FIELD_ACTILITY_SPREADING_FACTOR)));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_LRR_SNR)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_SNR, Math.abs(loraMessage.getDouble(FIELD_ACTILITY_LRR_SNR)));
+        if (rootObject.containsKey(FIELD_ACTILITY_LRR_SNR)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_SNR,
+                    Math.abs(Double.valueOf(rootObject.getString(FIELD_ACTILITY_LRR_SNR))));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_FPORT)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_PORT, loraMessage.getInteger(FIELD_ACTILITY_FPORT));
+        if (rootObject.containsKey(FIELD_ACTILITY_FPORT)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_PORT,
+                    Integer.valueOf(rootObject.getString(FIELD_ACTILITY_FPORT)));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_LATITUTDE)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_LATITUDE, loraMessage.getDouble(FIELD_ACTILITY_LATITUTDE));
+        if (rootObject.containsKey(FIELD_ACTILITY_LATITUTDE)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_LATITUDE,
+                    Double.valueOf(rootObject.getString(FIELD_ACTILITY_LATITUTDE)));
         }
-        if (loraMessage.containsKey(FIELD_ACTILITY_LONGITUDE)) {
-            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_LONGITUDE, loraMessage.getDouble(FIELD_ACTILITY_LONGITUDE));
+        if (rootObject.containsKey(FIELD_ACTILITY_LONGITUDE)) {
+            returnMap.put(LoraConstants.APP_PROPERTY_FUNCTION_LONGITUDE,
+                    Double.valueOf(rootObject.getString(FIELD_ACTILITY_LONGITUDE)));
+        }
+
+        if (rootObject.containsKey(FIELD_ACTILITY_LRRS) && rootObject.getJsonObject(FIELD_ACTILITY_LRRS).containsKey(FIELD_ACTILITY_LRR)) {
+            final JsonArray lrrs = rootObject.getJsonObject(FIELD_ACTILITY_LRRS).getJsonArray(FIELD_ACTILITY_LRR);
+            final JsonArray normalizedGatways = new JsonArray();
+            for (int i = 0; i < lrrs.size(); i++) {
+                final JsonObject lrr = lrrs.getJsonObject(i);
+                final JsonObject normalizedGatway = new JsonObject();
+                if (lrr.containsKey(FIELD_ACTILITY_LRR_ID)) {
+                    normalizedGatway.put(LoraConstants.GATEWAY_ID, lrr.getString(FIELD_ACTILITY_LRR_ID));
+                }
+                if (lrr.containsKey(FIELD_ACTILITY_LRR_RSSI)) {
+                    normalizedGatway.put(LoraConstants.APP_PROPERTY_RSS,
+                            Math.abs(Double.valueOf(lrr.getString(FIELD_ACTILITY_LRR_RSSI))));
+                }
+                if (lrr.containsKey(FIELD_ACTILITY_LRR_SNR)) {
+                    normalizedGatway.put(LoraConstants.APP_PROPERTY_SNR,
+                            Math.abs(Double.valueOf(lrr.getString(FIELD_ACTILITY_LRR_SNR))));
+                }
+                normalizedGatways.add(normalizedGatway);
+            }
+            returnMap.put(LoraConstants.GATEWAYS, normalizedGatways.toString());
         }
         return returnMap;
     }

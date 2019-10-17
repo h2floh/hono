@@ -4,6 +4,10 @@ kind: Service
 metadata:
   {{- $args := dict "dot" . "component" "adapter-kura" "name" "adapter-kura" }}
   {{- include "hono.metadata" $args | nindent 2 }}
+  {{- with .Values.adapters.kura.svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   ports:
   - name: mqtt
@@ -20,7 +24,10 @@ spec:
     {{- include "hono.matchLabels" $args | nindent 4 }}
 {{- if and ( eq .Values.useLoadBalancer true ) ( ne .Values.platform "openshift" ) }}
   type: LoadBalancer
-{{ else }}
+{{- else }}
   type: NodePort
 {{- end }}
-{{ end }}
+{{- with .Values.adapters.kura.svc.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+{{- end }}
+{{- end }}

@@ -16,6 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.net.HttpURLConnection;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 
 import javax.security.auth.x500.X500Principal;
@@ -24,7 +28,9 @@ import org.eclipse.hono.client.StatusCodeMapper;
 import org.eclipse.hono.service.management.Id;
 import org.eclipse.hono.service.management.OperationResult;
 import org.eclipse.hono.service.management.Result;
+import org.eclipse.hono.service.management.tenant.Tenant;
 import org.eclipse.hono.service.management.tenant.TenantManagementService;
+import org.eclipse.hono.service.management.tenant.TrustedCertificateAuthority;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.RegistryManagementConstants;
 import org.eclipse.hono.util.TenantConstants;
@@ -36,7 +42,6 @@ import io.opentracing.noop.NoopSpan;
 import io.vertx.core.Future;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.junit5.Checkpoint;
 import io.vertx.junit5.VertxTestContext;
 
 /**
@@ -48,6 +53,7 @@ public abstract class AbstractTenantServiceTest {
 
     /**
      * Gets tenant service being tested.
+     * 
      * @return The tenant service
      */
     public abstract TenantService getTenantService();
@@ -73,7 +79,7 @@ public abstract class AbstractTenantServiceTest {
                     final Future<OperationResult<Id>> result = Future.future();
                     getTenantManagementService().add(
                     Optional.of("tenant"),
-                    buildTenantPayload("tenant"), NoopSpan.INSTANCE,
+                    buildTenantPayload(), NoopSpan.INSTANCE,
                             result);
             return result;
         })
@@ -92,13 +98,18 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testAddTenantSucceedsWithGeneratedTenantId(final VertxTestContext ctx) {
 
-        getTenantManagementService().add(Optional.empty(), buildTenantPayload(null), NoopSpan.INSTANCE,
-                ctx.succeeding(s -> ctx.verify(() -> {
-                    final String id = s.getPayload().getId();
-                    assertNotNull(id);
-                    assertEquals(HttpURLConnection.HTTP_CREATED, s.getStatus());
+        getTenantManagementService().add(
+                Optional.empty(),
+                buildTenantPayload(),
+                NoopSpan.INSTANCE,
+                ctx.succeeding(s -> {
+                    ctx.verify(() -> {
+                        final String id = s.getPayload().getId();
+                        assertNotNull(id);
+                        assertEquals(HttpURLConnection.HTTP_CREATED, s.getStatus());
+                    });
                     ctx.completeNow();
-                })));
+                }));
     }
 
     /**
@@ -108,15 +119,20 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testAddTenantSucceedsAndContainResourceVersion(final VertxTestContext ctx) {
 
-        getTenantManagementService().add(Optional.of("tenant"), buildTenantPayload("tenant"), NoopSpan.INSTANCE,
-                ctx.succeeding(s -> ctx.verify(() -> {
-                    final String id = s.getPayload().getId();
-                    final String version = s.getResourceVersion().orElse(null);
-                    assertNotNull(version);
-                    assertEquals("tenant", id);
-                    assertEquals(HttpURLConnection.HTTP_CREATED, s.getStatus());
+        getTenantManagementService().add(
+                Optional.of("tenant"),
+                buildTenantPayload(),
+                NoopSpan.INSTANCE,
+                ctx.succeeding(s -> {
+                    ctx.verify(() -> {
+                        final String id = s.getPayload().getId();
+                        final String version = s.getResourceVersion().orElse(null);
+                        assertNotNull(version);
+                        assertEquals("tenant", id);
+                        assertEquals(HttpURLConnection.HTTP_CREATED, s.getStatus());
+                    });
                     ctx.completeNow();
-                }))
+                })
         );
     }
 
@@ -127,13 +143,18 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testDeleteTenantWithEmptyResourceVersionSucceed(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(ok -> {
-            getTenantManagementService().remove("tenant",
-                    Optional.empty(), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+        addTenant("tenant")
+        .map(ok -> {
+            getTenantManagementService().remove(
+                    "tenant",
+                    Optional.empty(),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> {
+                            assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+                        });
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -146,15 +167,18 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testDeleteTenantWithMatchingResourceVersionSucceed(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(cr -> {
+        addTenant("tenant")
+        .map(cr -> {
             final String version = cr.getResourceVersion().orElse(null);
-            assertNotNull(version);
-            getTenantManagementService().remove("tenant",
-                    Optional.of(version), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+            ctx.verify(() -> assertNotNull(version));
+            getTenantManagementService().remove(
+                    "tenant",
+                    Optional.of(version),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus()));
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -167,15 +191,18 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testDeleteTenantWithNonMatchingResourceVersionFails(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(cr -> {
+        addTenant("tenant")
+        .map(cr -> {
             final String version = cr.getResourceVersion().orElse(null);
-            assertNotNull(version);
-            getTenantManagementService().remove("tenant",
-                    Optional.of(version + "abc"), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_PRECON_FAILED, s.getStatus());
+            ctx.verify(() -> assertNotNull(version));
+            getTenantManagementService().remove(
+                    "tenant",
+                    Optional.of(version + "abc"),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_PRECON_FAILED, s.getStatus()));
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -188,16 +215,19 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantWithNonMatchingResourceVersionFails(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(cr -> {
+        addTenant("tenant")
+        .map(cr -> {
             final String version = cr.getResourceVersion().orElse(null);
-            assertNotNull(version);
-            getTenantManagementService().update("tenant",
-                    buildTenantPayload("tenant").put("ext", new JsonObject()),
-                    Optional.of(version + "abc"), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_PRECON_FAILED, s.getStatus());
+            ctx.verify(() -> assertNotNull(version));
+            getTenantManagementService().update(
+                    "tenant",
+                    buildTenantPayload().put(RegistryManagementConstants.FIELD_EXT, new JsonObject()),
+                    Optional.of(version + "abc"),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_PRECON_FAILED, s.getStatus()));
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -211,16 +241,19 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantWithMatchingResourceVersionSucceeds(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(cr -> {
+        addTenant("tenant")
+        .map(cr -> {
             final String version = cr.getResourceVersion().orElse(null);
-            assertNotNull(version);
-            getTenantManagementService().update("tenant",
-                    buildTenantPayload("tenant").put("ext", new JsonObject()),
-                    Optional.of(version), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+            ctx.verify(() -> assertNotNull(version));
+            getTenantManagementService().update(
+                    "tenant",
+                    buildTenantPayload().put(RegistryManagementConstants.FIELD_EXT, new JsonObject()),
+                    Optional.of(version),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus()));
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -233,14 +266,17 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantWithEmptyResourceVersionSucceed(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(cr -> {
-            getTenantManagementService().update("tenant",
-                    buildTenantPayload("tenant").put("ext", new JsonObject()),
-                    Optional.empty(), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+        addTenant("tenant")
+        .map(cr -> {
+            getTenantManagementService().update(
+                    "tenant",
+                    buildTenantPayload().put(RegistryManagementConstants.FIELD_EXT, new JsonObject()),
+                    Optional.empty(),
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus()));
                         ctx.completeNow();
-                    }))
+                    })
             );
             return null;
         });
@@ -254,22 +290,24 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testAddTenantFailsForDuplicateCa(final VertxTestContext ctx) {
 
-        final JsonObject trustedCa = new JsonObject()
+        final JsonArray trustedCa = new JsonArray().add(new JsonObject()
                 .put(TenantConstants.FIELD_PAYLOAD_SUBJECT_DN, "CN=taken")
-                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAKEY");
-        final TenantObject tenant = TenantObject.from("tenant", true)
-                .setProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
+                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAKEY".getBytes(StandardCharsets.UTF_8)));
 
-        addTenant("tenant", JsonObject.mapFrom(tenant)).map(ok -> {
-            final TenantObject newTenant = TenantObject.from("newTenant", true)
-                    .setProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
+        final JsonObject tenant = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_ENABLED, true)
+                .put(RegistryManagementConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
+
+        addTenant("tenant", tenant)
+        .map(ok -> {
             getTenantManagementService().add(
                     Optional.of("newTenant"),
-                    JsonObject.mapFrom(newTenant), NoopSpan.INSTANCE,
-                    ctx.succeeding(s -> ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_CONFLICT, s.getStatus());
+                    tenant,
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_CONFLICT, s.getStatus()));
                         ctx.completeNow();
-                    })));
+                    }));
             return null;
         });
     }
@@ -282,10 +320,13 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testGetTenantFailsForNonExistingTenant(final VertxTestContext ctx) {
 
-        getTenantService().get("notExistingTenant", null, ctx.succeeding(s -> ctx.verify(() -> {
-            assertEquals(HttpURLConnection.HTTP_NOT_FOUND, s.getStatus());
-            ctx.completeNow();
-        })));
+        getTenantService().get(
+                "notExistingTenant", 
+                NoopSpan.INSTANCE,
+                ctx.succeeding(s -> {
+                    ctx.verify(() -> assertEquals(HttpURLConnection.HTTP_NOT_FOUND, s.getStatus()));
+                    ctx.completeNow();
+                }));
     }
 
     /**
@@ -298,11 +339,11 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testGetTenantSucceedsForExistingTenant(final VertxTestContext ctx) {
 
-        final JsonObject tenantSpec = buildTenantPayload("tenant")
-            .put(RegistryManagementConstants.FIELD_EXT, new JsonObject().put("plan", "unlimited"))
-            .put(RegistryManagementConstants.FIELD_MINIMUM_MESSAGE_SIZE, 2048)
-            .put(RegistryManagementConstants.FIELD_RESOURCE_LIMITS, new JsonObject()
-                    .put(RegistryManagementConstants.FIELD_RESOURCE_LIMITS_MAX_CONNECTIONS, 1000));
+        final JsonObject tenantSpec = buildTenantPayload()
+                .put(RegistryManagementConstants.FIELD_EXT, new JsonObject().put("plan", "unlimited"))
+                .put(TenantConstants.FIELD_MINIMUM_MESSAGE_SIZE, 2048)
+                .put(TenantConstants.FIELD_RESOURCE_LIMITS, new JsonObject()
+                        .put(TenantConstants.FIELD_MAX_CONNECTIONS, 1000));
 
         // GIVEN a tenant that has been added via the Management API
         addTenant("tenant", tenantSpec)
@@ -349,13 +390,18 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantVersionSucceedsForExistingTenantVersion(final VertxTestContext ctx) {
 
-        addTenant("tenant", buildTenantPayload("tenant")).map(ok -> {
-            getTenantService().get("tenant", ctx.succeeding(s -> ctx.verify(() -> {
-                assertEquals(HttpURLConnection.HTTP_OK, s.getStatus());
-                assertEquals("tenant", s.getPayload().getString(TenantConstants.FIELD_PAYLOAD_TENANT_ID));
-                assertEquals(Boolean.TRUE, s.getPayload().getBoolean(TenantConstants.FIELD_ENABLED));
-                ctx.completeNow();
-            })));
+        addTenant("tenant")
+        .map(ok -> {
+            getTenantService().get(
+                    "tenant", 
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> {
+                            assertEquals(HttpURLConnection.HTTP_OK, s.getStatus());
+                            assertEquals("tenant", s.getPayload().getString(TenantConstants.FIELD_PAYLOAD_TENANT_ID));
+                            assertEquals(Boolean.TRUE, s.getPayload().getBoolean(TenantConstants.FIELD_ENABLED));
+                        });
+                        ctx.completeNow();
+                    }));
             return null;
         });
     }
@@ -370,21 +416,33 @@ public abstract class AbstractTenantServiceTest {
     public void testGetForCertificateAuthoritySucceeds(final VertxTestContext ctx) {
 
         final X500Principal subjectDn = new X500Principal("O=Eclipse, OU=Hono, CN=ca");
-        final JsonObject trustedCa = new JsonObject()
-                .put(TenantConstants.FIELD_PAYLOAD_SUBJECT_DN, subjectDn.getName(X500Principal.RFC2253))
-                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAPUBLICKEY");
-        final JsonObject tenant = buildTenantPayload("tenant")
-                .put(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
 
-        addTenant("tenant", tenant).map(ok -> {
-            getTenantService().get(subjectDn, null, ctx.succeeding(s -> ctx.verify(() -> {
-                assertEquals(HttpURLConnection.HTTP_OK, s.getStatus());
-                final TenantObject obj = s.getPayload().mapTo(TenantObject.class);
-                assertEquals("tenant", obj.getTenantId());
-                final JsonObject ca = obj.getProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, JsonObject.class);
-                assertEquals(trustedCa, ca);
-                ctx.completeNow();
-            })));
+        final JsonArray expectedCaList = new JsonArray().add(new JsonObject()
+                .put(TenantConstants.FIELD_PAYLOAD_SUBJECT_DN, subjectDn.getName(X500Principal.RFC2253))
+                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAPUBLICKEY".getBytes(StandardCharsets.UTF_8)));
+
+        final Tenant tenant = new Tenant()
+                .setTrustedCertificateAuthorities(List.of(new TrustedCertificateAuthority()
+                        .setSubjectDn(subjectDn)
+                        .setPublicKey("NOTAPUBLICKEY".getBytes(StandardCharsets.UTF_8))
+                        .setNotBefore(Instant.now().minus(1, ChronoUnit.DAYS))
+                        .setNotAfter(Instant.now().plus(2, ChronoUnit.DAYS))));
+
+        addTenant("tenant", tenant)
+        .map(ok -> {
+            getTenantService().get(
+                    subjectDn,
+                    NoopSpan.INSTANCE,
+                    ctx.succeeding(s -> {
+                        ctx.verify(() -> {
+                            assertEquals(HttpURLConnection.HTTP_OK, s.getStatus());
+                            final TenantObject obj = s.getPayload().mapTo(TenantObject.class);
+                            assertEquals("tenant", obj.getTenantId());
+                            final JsonArray ca = obj.getProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, JsonArray.class);
+                            assertEquals(expectedCaList, ca);
+                        });
+                        ctx.completeNow();
+                    }));
             return null;
         });
     }
@@ -399,14 +457,14 @@ public abstract class AbstractTenantServiceTest {
 
         final X500Principal unknownSubjectDn = new X500Principal("O=Eclipse, OU=NotHono, CN=ca");
         final X500Principal subjectDn = new X500Principal("O=Eclipse, OU=Hono, CN=ca");
-        final String publicKey = "NOTAPUBLICKEY";
-        final JsonObject trustedCa = new JsonObject()
+        final JsonArray trustedCa = new JsonArray().add(new JsonObject()
                 .put(TenantConstants.FIELD_PAYLOAD_SUBJECT_DN, subjectDn.getName(X500Principal.RFC2253))
-                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, publicKey);
-        final JsonObject tenant = buildTenantPayload("tenant")
+                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAPUBLICKEY".getBytes(StandardCharsets.UTF_8)));
+        final JsonObject tenant = buildTenantPayload()
                 .put(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
 
-        addTenant("tenant", tenant).map(ok -> {
+        addTenant("tenant", tenant)
+        .map(ok -> {
             getTenantService().get(unknownSubjectDn, null, ctx.succeeding(s -> ctx.verify(() -> {
                 assertEquals(HttpURLConnection.HTTP_NOT_FOUND, s.getStatus());
                 ctx.completeNow();
@@ -424,19 +482,19 @@ public abstract class AbstractTenantServiceTest {
     public void testRemoveTenantSucceeds(final VertxTestContext ctx) {
 
         addTenant("tenant")
-                .compose(ok -> assertTenantExists(getTenantService(), "tenant"))
-                .compose(ok -> {
-                    final Future<Result<Void>> result = Future.future();
-                    getTenantManagementService().remove("tenant", Optional.empty(), NoopSpan.INSTANCE, result);
-                    return result;
-                })
-                .compose(s -> {
-                    ctx.verify(() -> {
-                        assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
-                    });
-                    return assertTenantDoesNotExist(getTenantService(), "tenant");
-                })
-                .setHandler(ctx.completing());
+        .compose(ok -> assertTenantExists(getTenantService(), "tenant"))
+        .compose(ok -> {
+            final Future<Result<Void>> result = Future.future();
+            getTenantManagementService().remove("tenant", Optional.empty(), NoopSpan.INSTANCE, result);
+            return result;
+        })
+        .compose(s -> {
+            ctx.verify(() -> {
+                assertEquals(HttpURLConnection.HTTP_NO_CONTENT, s.getStatus());
+            });
+            return assertTenantDoesNotExist(getTenantService(), "tenant");
+        })
+        .setHandler(ctx.completing());
 
     }
 
@@ -448,28 +506,35 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantSucceeds(final VertxTestContext ctx) {
 
-        final JsonObject updatedPayload = buildTenantPayload("tenant");
-        updatedPayload.put("custom-prop", "something");
+        final JsonObject origPayload = buildTenantPayload();
+        final JsonObject extensions = new JsonObject().put("custom-prop", "something");
 
-        final Checkpoint update = ctx.checkpoint(2);
-
-        addTenant("tenant").compose(ok -> {
+        addTenant("tenant", origPayload)
+        .compose(ok -> {
             final Future<OperationResult<Void>> updateResult = Future.future();
-            getTenantManagementService().update("tenant", updatedPayload.copy(), Optional.empty(), NoopSpan.INSTANCE, updateResult);
+            final JsonObject updatedPayload = origPayload.copy();
+            updatedPayload.put(RegistryManagementConstants.FIELD_EXT, extensions);
+            getTenantManagementService().update(
+                    "tenant",
+                    updatedPayload,
+                    Optional.empty(),
+                    NoopSpan.INSTANCE,
+                    updateResult);
             return updateResult;
         }).compose(updateResult -> {
             ctx.verify(() -> {
                 assertEquals(HttpURLConnection.HTTP_NO_CONTENT, updateResult.getStatus());
-                update.flag();
             });
             final Future<TenantResult<JsonObject>> getResult = Future.future();
             getTenantService().get("tenant", null, getResult);
             return getResult;
-        }).setHandler(ctx.succeeding(getResult -> ctx.verify(() -> {
-            assertEquals(HttpURLConnection.HTTP_OK, getResult.getStatus());
-            assertEquals("something", getResult.getPayload().getString("custom-prop") );
-            update.flag();
-        })));
+        }).setHandler(ctx.succeeding(getResult -> {
+            ctx.verify(() -> {
+                assertEquals(HttpURLConnection.HTTP_OK, getResult.getStatus());
+                assertEquals(extensions, getResult.getPayload().getJsonObject(RegistryManagementConstants.FIELD_EXT));
+            });
+            ctx.completeNow();
+        }));
     }
 
 
@@ -483,31 +548,36 @@ public abstract class AbstractTenantServiceTest {
     @Test
     public void testUpdateTenantFailsForDuplicateCa(final VertxTestContext ctx) {
 
+        final TrustedCertificateAuthority trustedCa = new TrustedCertificateAuthority();
+        trustedCa.setSubjectDn("CN=taken");
+        trustedCa.setPublicKey("NOTAKEY".getBytes(StandardCharsets.UTF_8));
+
         // GIVEN two tenants, one with a CA configured, the other with no CA
-        final JsonObject trustedCa = new JsonObject()
-                .put(TenantConstants.FIELD_PAYLOAD_SUBJECT_DN, "CN=taken")
-                .put(TenantConstants.FIELD_PAYLOAD_PUBLIC_KEY, "NOTAKEY");
-        final TenantObject tenantOne = TenantObject.from("tenantOne", true)
-                .setProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
-        final TenantObject tenantTwo = TenantObject.from("tenantTwo", true);
+        final Tenant tenantOne = new Tenant().setEnabled(true);
+        tenantOne.setTrustedCertificateAuthorities(List.of(trustedCa));
+        final Tenant tenantTwo = new Tenant().setEnabled(true);
+
         addTenant("tenantOne", JsonObject.mapFrom(tenantOne))
         .compose(ok -> addTenant("tenantTwo", JsonObject.mapFrom(tenantTwo)))
         .compose(ok -> {
             // WHEN updating the second tenant to use the same CA as the first tenant
-            tenantTwo.setProperty(TenantConstants.FIELD_PAYLOAD_TRUSTED_CA, trustedCa);
-                    final Future<OperationResult<Void>> result = Future.future();
-                    getTenantManagementService().update(
+            tenantTwo.setTrustedCertificateAuthorities(List.of(trustedCa));
+            final Future<OperationResult<Void>> result = Future.future();
+            getTenantManagementService().update(
                     "tenantTwo",
                     JsonObject.mapFrom(tenantTwo),
-                            null, NoopSpan.INSTANCE,
+                            null,
+                            NoopSpan.INSTANCE,
                             result);
             return result;
         })
-        .setHandler(ctx.succeeding(s -> ctx.verify(() -> {
-            // THEN the update fails with a 409
-            assertEquals(HttpURLConnection.HTTP_CONFLICT, s.getStatus());
+        .setHandler(ctx.succeeding(s -> {
+            ctx.verify(() -> {
+                // THEN the update fails with a 409
+                assertEquals(HttpURLConnection.HTTP_CONFLICT, s.getStatus());
+            });
             ctx.completeNow();
-        })));
+        }));
     }
 
     /**
@@ -555,7 +625,18 @@ public abstract class AbstractTenantServiceTest {
      */
     protected Future<OperationResult<Id>> addTenant(final String tenantId) {
 
-        return addTenant(tenantId, buildTenantPayload(tenantId));
+        return addTenant(tenantId, buildTenantPayload());
+    }
+
+    /**
+     * Adds a tenant.
+     *
+     * @param tenantId The identifier of the tenant.
+     * @param tenant The tenant.
+     * @return A succeeded future if the tenant has been created.
+     */
+    protected Future<OperationResult<Id>> addTenant(final String tenantId, final Tenant tenant) {
+        return addTenant(tenantId, JsonObject.mapFrom(tenant));
     }
 
     /**
@@ -583,10 +664,9 @@ public abstract class AbstractTenantServiceTest {
      * <p>
      * The tenant object created contains configurations for the http and the mqtt adapter.
      *
-     * @param tenantId The tenant identifier.
      * @return The tenant object.
      */
-    private static JsonObject buildTenantPayload(final String tenantId) {
+    private static JsonObject buildTenantPayload() {
 
         final JsonObject adapterDetailsHttp = new JsonObject()
                 .put(RegistryManagementConstants.FIELD_ADAPTERS_TYPE, Constants.PROTOCOL_ADAPTER_TYPE_HTTP)
@@ -597,7 +677,6 @@ public abstract class AbstractTenantServiceTest {
                 .put(RegistryManagementConstants.FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED, Boolean.TRUE)
                 .put(RegistryManagementConstants.FIELD_ENABLED, Boolean.TRUE);
         final JsonObject tenantPayload = new JsonObject()
-                .put(RegistryManagementConstants.FIELD_PAYLOAD_TENANT_ID, tenantId)
                 .put(RegistryManagementConstants.FIELD_ENABLED, Boolean.TRUE)
                 .put(RegistryManagementConstants.FIELD_ADAPTERS, new JsonArray().add(adapterDetailsHttp).add(adapterDetailsMqtt));
         return tenantPayload;

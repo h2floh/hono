@@ -13,12 +13,9 @@
 
 package org.eclipse.hono.client.impl;
 
-import static org.eclipse.hono.client.impl.VertxMockSupport.anyHandler;
-import static org.eclipse.hono.client.impl.VertxMockSupport.mockHandler;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.AdditionalAnswers.answerVoid;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -36,8 +33,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-import javax.security.sasl.AuthenticationException;
-
+import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.messaging.Target;
 import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
@@ -49,11 +45,13 @@ import org.eclipse.hono.client.ServerErrorException;
 import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.config.ClientConfigProperties;
 import org.eclipse.hono.connection.ConnectionFactory;
+import org.eclipse.hono.util.TelemetryConstants;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.Timeout;
 import org.junit.runner.RunWith;
+import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 
 import io.vertx.core.AsyncResult;
@@ -70,7 +68,6 @@ import io.vertx.proton.ProtonMessageHandler;
 import io.vertx.proton.ProtonQoS;
 import io.vertx.proton.ProtonReceiver;
 import io.vertx.proton.ProtonSender;
-import io.vertx.proton.sasl.MechanismMismatchException;
 import io.vertx.proton.sasl.SaslSystemException;
 
 /**
@@ -170,64 +167,9 @@ public class HonoConnectionImplTest {
         // and the client has indeed tried 6 times in total before giving up
         assertTrue(connectionFactory.awaitFailure());
         final ArgumentCaptor<Long> delayValueCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(vertx, times(reconnectAttempts)).setTimer(delayValueCaptor.capture(), anyHandler());
+        verify(vertx, times(reconnectAttempts)).setTimer(delayValueCaptor.capture(), VertxMockSupport.anyHandler());
         // and the first delay period is the minDelay value
         ctx.assertEquals(10L, delayValueCaptor.getAllValues().get(0));
-    }
-
-    /**
-     * Verifies that the client fails with a ClientErrorException with status code 401
-     * if it cannot authenticate to the server due to wrong credentials.
-     * 
-     * @param ctx The vert.x test client.
-     */
-    @Test
-    public void testConnectFailsWithClientErrorForAuthenticationException(final TestContext ctx) {
-
-        // GIVEN a client that is configured to connect
-        // to a peer that always throws an AuthenticationException
-        props.setReconnectAttempts(2);
-        props.setConnectTimeout(10);
-        connectionFactory = new DisconnectHandlerProvidingConnectionFactory(con)
-                .setExpectedFailingConnectionAttempts(1) // only one connection attempt expected here
-                .failWith(new AuthenticationException("Failed to authenticate"));
-        honoConnection = new HonoConnectionImpl(vertx, connectionFactory, props);
-
-        // WHEN the client tries to connect
-        honoConnection.connect().setHandler(ctx.asyncAssertFailure(t -> {
-            // THEN the connection attempt fails due do lack of authorization
-            ctx.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED, ((ServiceInvocationException) t).getErrorCode());
-        }));
-        // and the client has indeed tried three times in total
-        assertTrue(connectionFactory.awaitFailure());
-    }
-
-    /**
-     * Verifies that the client fails with a ClientErrorException with status code 401
-     * if it cannot authenticate to the server because no suitable SASL mechanism was found.
-     * 
-     * @param ctx The vert.x test client.
-     */
-    @Test
-    public void testConnectFailsWithClientErrorForNoSaslMechanismException(final TestContext ctx) {
-
-        // GIVEN a client that is configured to connect
-        // to a peer that always throws a SaslSystemException (as if no credentials were given)
-        props.setReconnectAttempts(2);
-        props.setConnectTimeout(10);
-        connectionFactory = new DisconnectHandlerProvidingConnectionFactory(con)
-                .setExpectedFailingConnectionAttempts(1) // only one connection attempt expected here
-                .failWith(new MechanismMismatchException(
-                        "Could not find a suitable SASL mechanism for the remote peer using the available credentials."));
-        honoConnection = new HonoConnectionImpl(vertx, connectionFactory, props);
-
-        // WHEN the client tries to connect
-        honoConnection.connect().setHandler(ctx.asyncAssertFailure(t -> {
-            // THEN the connection attempt fails due do lack of authorization
-            ctx.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED, ((ServiceInvocationException) t).getErrorCode());
-        }));
-        // and the client has indeed tried three times in total
-        assertTrue(connectionFactory.awaitFailure());
     }
 
     /**
@@ -246,33 +188,6 @@ public class HonoConnectionImplTest {
         connectionFactory = new DisconnectHandlerProvidingConnectionFactory(con)
                 .setExpectedFailingConnectionAttempts(3)
                 .failWith(new SaslSystemException(false, "SASL handshake failed due to a transient error"));
-        honoConnection = new HonoConnectionImpl(vertx, connectionFactory, props);
-
-        // WHEN the client tries to connect
-        honoConnection.connect().setHandler(ctx.asyncAssertFailure(t -> {
-            // THEN the connection attempt fails
-            ctx.assertEquals(HttpURLConnection.HTTP_UNAVAILABLE, ((ServiceInvocationException) t).getErrorCode());
-        }));
-        // and the client has indeed tried three times in total
-        assertTrue(connectionFactory.awaitFailure());
-    }
-
-    /**
-     * Verifies that the client fails with a ServerErrorException with status code 503
-     * if it cannot authenticate to the server because of a permanent error.
-     *
-     * @param ctx The vert.x test client.
-     */
-    @Test
-    public void testConnectFailsWithClientErrorForPermanentSaslSystemException(final TestContext ctx) {
-
-        // GIVEN a client that is configured to connect
-        // to a peer that always throws a SaslSystemException with permanent=true
-        props.setReconnectAttempts(2);
-        props.setConnectTimeout(10);
-        connectionFactory = new DisconnectHandlerProvidingConnectionFactory(con)
-                .setExpectedFailingConnectionAttempts(1) // only one connection attempt expected here
-                .failWith(new SaslSystemException(true, "SASL handshake failed due to an unrecoverable error"));
         honoConnection = new HonoConnectionImpl(vertx, connectionFactory, props);
 
         // WHEN the client tries to connect
@@ -442,7 +357,7 @@ public class HonoConnectionImplTest {
             }
             resultHandler.handle(Future.failedFuture(new ServerErrorException(HttpURLConnection.HTTP_UNAVAILABLE)));
             return null;
-        }).when(factory).connect(any(), anyHandler(), anyHandler(), anyHandler());
+        }).when(factory).connect(any(), VertxMockSupport.anyHandler(), VertxMockSupport.anyHandler(), VertxMockSupport.anyHandler());
         honoConnection = new HonoConnectionImpl(vertx, factory, props);
         honoConnection.connect().setHandler(
                 ctx.asyncAssertFailure(cause -> {
@@ -560,7 +475,7 @@ public class HonoConnectionImplTest {
         when(con.createReceiver(anyString())).thenReturn(receiver);
         @SuppressWarnings("unchecked")
         final Handler<String> remoteCloseHook = mock(Handler.class);
-        when(vertx.setTimer(anyLong(), anyHandler())).thenAnswer(invocation -> {
+        when(vertx.setTimer(anyLong(), VertxMockSupport.anyHandler())).thenAnswer(invocation -> {
             // do not run timers immediately
             return 0L;
         });
@@ -575,7 +490,7 @@ public class HonoConnectionImplTest {
                 "source", ProtonQoS.AT_LEAST_ONCE, (delivery, msg) -> {}, remoteCloseHook);
 
         // THEN link establishment is failed after the configured amount of time
-        verify(vertx).setTimer(eq(props.getLinkEstablishmentTimeout()), anyHandler());
+        verify(vertx).setTimer(eq(props.getLinkEstablishmentTimeout()), VertxMockSupport.anyHandler());
         // and when the peer rejects to open the link
         @SuppressWarnings("unchecked")
         final ArgumentCaptor<Handler<AsyncResult<ProtonReceiver>>> openHandler = ArgumentCaptor.forClass(Handler.class);
@@ -601,7 +516,7 @@ public class HonoConnectionImplTest {
         final ProtonReceiver receiver = mock(ProtonReceiver.class);
         when(receiver.isOpen()).thenReturn(Boolean.TRUE);
         when(con.createReceiver(anyString())).thenReturn(receiver);
-        final Handler<String> remoteCloseHook = mockHandler();
+        final Handler<String> remoteCloseHook = VertxMockSupport.mockHandler();
 
         // GIVEN an established connection
         final Async connectAttempt = ctx.async();
@@ -719,6 +634,74 @@ public class HonoConnectionImplTest {
     }
 
     /**
+     * Verifies that the attempt to create a sender for a {@code null} target address
+     * fails with a {@code ServerErrorException} if the remote peer doesn't
+     * support the anonymous terminus.
+     * 
+     * @param ctx The vert.x test context.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testCreateSenderFailsForUnsupportedAnonTerminus(final TestContext ctx) {
+
+        when(con.getRemoteOfferedCapabilities()).thenReturn(new Symbol[] {Symbol.valueOf("some-feature")});
+        final Handler<String> remoteCloseHook = mock(Handler.class);
+
+        // GIVEN an established connection
+        final Async connectAttempt = ctx.async();
+        honoConnection.connect().setHandler(ctx.asyncAssertSuccess(ok -> connectAttempt.complete()));
+        connectAttempt.await();
+
+        // WHEN a client tries to open a sender for the anonymous terminus
+        final Future<ProtonSender> result = honoConnection.createSender(
+                null, ProtonQoS.AT_LEAST_ONCE, remoteCloseHook);
+
+        // THEN the attempt fails
+        assertTrue(result.failed());
+        assertThat(((ServerErrorException) result.cause()).getErrorCode(), is(HttpURLConnection.HTTP_NOT_IMPLEMENTED));
+        // and the remote close hook is not invoked
+        verify(remoteCloseHook, never()).handle(anyString());
+    }
+
+
+    /**
+     * Verifies that the attempt to create a sender fails with a
+     * {@code ServerErrorException} if the remote peer sends a
+     * {@code null} target in its attach frame.
+     * 
+     * @param ctx The vert.x test context.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testCreateSenderFailsIfPeerDoesNotCreateTerminus(final TestContext ctx) {
+
+        final ProtonSender sender = mock(ProtonSender.class);
+        when(sender.getRemoteTarget()).thenReturn(null);
+        when(con.createSender(anyString())).thenReturn(sender);
+        final Handler<String> remoteCloseHook = mock(Handler.class);
+
+        // GIVEN an established connection
+        final Async connectAttempt = ctx.async();
+        honoConnection.connect().setHandler(ctx.asyncAssertSuccess(ok -> connectAttempt.complete()));
+        connectAttempt.await();
+
+        // WHEN the client tries to open a sender link
+        final Future<ProtonSender> result = honoConnection.createSender(
+                TelemetryConstants.TELEMETRY_ENDPOINT, ProtonQoS.AT_LEAST_ONCE, remoteCloseHook);
+        final ArgumentCaptor<Handler<AsyncResult<ProtonSender>>> openHandler = ArgumentCaptor.forClass(Handler.class);
+        verify(sender).open();
+        verify(sender).openHandler(openHandler.capture());
+        // and the peer does not allocate a local terminus for the link
+        openHandler.getValue().handle(Future.succeededFuture(sender));
+
+        // THEN the link does not get established
+        assertTrue(result.failed());
+        assertThat(((ServerErrorException) result.cause()).getErrorCode(), is(HttpURLConnection.HTTP_UNAVAILABLE));
+        // and the remote close hook does not get invoked
+        verify(remoteCloseHook, never()).handle(anyString());
+    }
+
+    /**
      * Verifies that the attempt to create a sender succeeds when sender never gets credits.
      *
      * @param ctx The vert.x test context.
@@ -734,7 +717,7 @@ public class HonoConnectionImplTest {
         when(sender.getRemoteTarget()).thenReturn(target);
         when(sender.getCredit()).thenReturn(0);
         // just invoke openHandler with succeeded future
-        doAnswer(answerVoid(
+        doAnswer(AdditionalAnswers.answerVoid(
                 (final Handler<AsyncResult<ProtonSender>> handler) -> handler.handle(Future.succeededFuture(sender))))
                         .when(sender).openHandler(any(Handler.class));
         final Handler<String> remoteCloseHook = mock(Handler.class);
@@ -781,10 +764,10 @@ public class HonoConnectionImplTest {
         when(sender.getRemoteTarget()).thenReturn(target);
         when(sender.getCredit()).thenReturn(0);
         // mock handlers
-        doAnswer(answerVoid(
+        doAnswer(AdditionalAnswers.answerVoid(
                 (final Handler<AsyncResult<ProtonSender>> handler) -> handler.handle(Future.succeededFuture(sender))))
                         .when(sender).openHandler(any(Handler.class));
-        doAnswer(answerVoid(
+        doAnswer(AdditionalAnswers.answerVoid(
                 (final Handler<ProtonSender> handler) -> handler.handle(sender)))
                         .when(sender).sendQueueDrainHandler(any(Handler.class));
         final Handler<String> remoteCloseHook = mock(Handler.class);

@@ -20,7 +20,7 @@ import java.net.HttpURLConnection;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.hono.service.management.tenant.ResourceLimits;
+import org.eclipse.hono.util.ResourceLimits;
 import org.eclipse.hono.service.management.tenant.Adapter;
 import org.eclipse.hono.service.management.tenant.Tenant;
 import org.eclipse.hono.tests.DeviceRegistryHttpClient;
@@ -268,9 +268,14 @@ public class TenantHttpIT {
     @Test
     public void testAddTenantFailsForMalformedTrustConfiguration(final VertxTestContext context) {
 
-        final Tenant requestBody = Tenants.createTenantForTrustAnchor("test-dn", "NotBased64Encoded".getBytes(), "RSA");
+        final Tenant requestBody = Tenants.createTenantForTrustAnchor("CN=test-dn", "NotBased64Encoded".getBytes(), "RSA");
 
-        registry.addTenant(tenantId, requestBody, "application/json", HttpURLConnection.HTTP_BAD_REQUEST).setHandler(context.completing());
+        registry.addTenant(
+                tenantId,
+                requestBody,
+                "application/json",
+                HttpURLConnection.HTTP_BAD_REQUEST)
+        .setHandler(context.completing());
     }
 
     /**

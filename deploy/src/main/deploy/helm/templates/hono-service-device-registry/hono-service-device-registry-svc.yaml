@@ -1,3 +1,4 @@
+{{- if .Values.deviceRegistryExample.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,5 +10,10 @@ spec:
     port: 5671
     protocol: TCP
     targetPort: amqps
+  - name: https
+    port: 8443
+    protocol: TCP
+    targetPort: https
   selector:
     {{- include "hono.matchLabels" $args | nindent 4 }}
+{{- end }}

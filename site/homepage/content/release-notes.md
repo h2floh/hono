@@ -2,6 +2,76 @@
 title = "Release Notes"
 +++
 
+## 1.0.0 (not yet released)
+
+### New Features
+
+* A tenant can now be configured with a *max-ttl* which is used as a upper boundary for default
+  TTL values configured for devices/tenants. Please refer to the [Tenant API]
+  ({{% doclink "/api/tenant#resource-limits-configuration-format" %}}) for details.
+  The AMQP, HTTP, MQTT and Kura protocol adapters consider this property when setting a TTL on
+  downstream event messages.
+* A protocol adapter can now be configured with a timeout for idle tenants. When there has been no 
+  communication between a protocol adapter instance and the devices of a tenant, the former one releases 
+  allocated resources of the tenant. Currently this means that it closes AMQP links and stops reporting 
+  metrics for this tenant. The timeout is configured with the property `tenantIdleTimeout` for a protocol 
+  adapter. Please refer to the protocol adapter [configuration guides]({{% doclink "/admin-guide/" %}})
+  for details.
+* The accounting period for the *message limit* checks can now be configured as `monthly`.
+  In this case the data usage for a tenant is calculated from the beginning till the end of the 
+  (Gregorian) calendar month. Refer [resource limits] ({{% doclink "/concepts/resource-limits/" %}})
+  for more information.
+* The devices can now indicate a *time-to-live* duration for event messages published using 
+  the HTTP and MQTT adapters by setting the *hono-ttl* property in requests explicitly. Please refer to the
+  [HTTP Adapter]({{% doclink "/user-guide/http-adapter/#publish-an-event-authenticated-device" %}})
+  and [MQTT Adapter] ({{% doclink "/user-guide/mqtt-adapter/#publishing-events" %}}) for details.
+* The device registry HTTP management API now properly implements *cross-origin resource sharing (CORS)* support,
+  by allowing the service to be exposed to configured domains (by default, it's exposed to all domains).
+* The `org.eclipse.hono.util.MessageHelper` now provides convenience factory methods for creating
+  new downstream messages from basic properties.
+  `org.eclipse.hono.service.AbstractProtocolAdapterbase` has been adapted to delegate to these
+  new factory methods.
+* Hono's protocol adapters can now use multiple trusted certificate authorities per tenant to authenticate
+  devices based on client certificates. The list of trusted certificate authorities can be managed at the
+  tenant level using the Device Registry Management API.
+* Authenticated gateway devices can now subscribe to commands for specific devices. Before, gateways
+  could only subscribe to commands directed at any of the devices that the gateway has acted on behalf of.
+  With the new feature of also being able to subscribe to commands for specific devices, northbound
+  applications will get notified of such a subscription along with the specific device id.
+* Now a *max-ttd* value, which is used as an upper boundary for the *hono-ttd* value specified by the devices,
+  can be set as an *extension* property in the adapters section of the tenant configuration.  
+
+### API Changes
+
+* The already deprecated *legacy metrics* support has been removed.
+* The already deprecated *legacy device registry* and the corresponding base classes, which had been deprecated 
+ as well, have been removed.
+* The topic filters used by MQTT devices to subscribe to commands has been changed slightly
+  to better fit the addressing scheme used by the other protocol adapters.
+  The existing topic filters have been deprecated but are still supported.
+  Please refer to the [MQTT adapter user guide]({{% doclink "/user-guide/mqtt-adapter/#command-control" %}})
+  for details.
+* The interface `ResourceLimitChecks` and its implementation classes have been moved to
+  package `org.eclipse.hono.service.resourcelimits` from `org.eclipse.hono.service.plan`.
+  Also the configuration parameters for the resource limits were renamed from `hono.plan`
+  to `hono.resourceLimits`. Please refer to the protocol adapter [configuration guides]
+  ({{% doclink "/admin-guide/" %}}) for more information.
+* The response payload of the *get Tenant* operation of the Tenant API has been changed to contain
+  a list of trusted certificate authorities instead of just a single one. This way, protocol
+  adapters can now authenticate devices based on client certificates signed by one of multiple
+  different trusted root authorities defined for a tenant.
+  All standard protocol adapters have been adapted to this change.
+  The *Tenant* JSON schema object used in the tenant related resources of the Device Registry Management API
+  has also been adapted to contain a list of trusted authorities instead of a single one.
+
+### Deprecations
+
+* The OpenShift specific source-to-image deployment model has been removed in
+  favor of the Helm charts and the Eclipse IoT Packages project. You can still
+  deploy Hono on OpenShift using the Helm charts.
+* Defining password secrets with user provided password hash, function and salt is deprecated in the device registry management
+  API and will be removed in the upcoming versions. You should use `pwd-plain` property only going forward.
+
 ## 1.0-M7
 
 ### New Features
@@ -33,7 +103,7 @@ title = "Release Notes"
   have been removed. The alternate variant of these methods which accepts an additional OpenTracing span parameter 
   should be used.  
 
-### Depreciations
+### Deprecations
 
 * The deprecated Kura adapter is no longer deployed by default by the Helm chart.
   However, it can still be deployed by means of [setting a configuration property]
@@ -66,7 +136,7 @@ title = "Release Notes"
 * The health check server endpoint will now bind to a default port value of 8088 if no values
   are set explicitly in the configuration. It is also possible to start both a secure and an insecure
   server (using different ports)
-  Refer to the [Monitoring configuration guide]({{% doclink "/admin-guide/monitoring-tracing-config.md" %}})
+  Refer to the [Monitoring configuration guide]({{% doclink "/admin-guide/monitoring-tracing-config" %}})
   for details.
 
 ### API Changes
@@ -179,13 +249,13 @@ which got deprecated, are planned to be dropped in 1.1.
 
 * The optional methods of the [Tenant API]({{% doclink "/api/tenant/" %}}) have been
   removed. Implementations of the Tenant API are encouraged to expose the *tenants* endpoint defined by
-  [Hono's HTTP based management API]({{% doclink "/api/device-registry-v1.yaml" %}}) instead.
+  [Hono's HTTP based management API]({{% doclink "/api/management" %}}) instead.
   Several of the formerly mandatory to include properties of the request and response messages have
   been made optional or removed altogether. Existing clients should not be affected by these changes, though.
 * The optional methods of the 
   [Device Registration API]({{% doclink "/api/device-registration/" %}}) have been 
   removed. Implementations of the Device Registration API are encouraged to expose the *devices* endpoint defined by
-  [Hono's HTTP based management API]({{% doclink "/api/device-registry-v1.yaml" %}}) instead.
+  [Hono's HTTP based management API]({{% doclink "/api/management" %}}) instead.
   Several of the formerly mandatory to include properties of the request and response messages have
   been made optional or removed altogether. Existing clients should not be affected by these changes, though.
 * The response message format of the *assert Device Registration* operation of the Device Registration API
@@ -196,7 +266,7 @@ which got deprecated, are planned to be dropped in 1.1.
   from `org.eclipse.hono.client.RegistrationClient` and `org.eclipse.hono.client.impl.RegistrationClientImpl`.
 * The optional methods of the [Credentials API]({{% doclink "/api/credentials/" %}}) 
   have been removed. Implementations of the Credentials API are encouraged to expose the *credentials* endpoint defined
-  by [Hono's HTTP based management API]({{% doclink "/api/device-registry-v1.yaml" %}}) instead.
+  by [Hono's HTTP based management API]({{% doclink "/api/management" %}}) instead.
   Several of the formerly mandatory to include properties of the request and response messages have
   been made optional or removed altogether. Existing clients should not be affected by these changes, though.
 * The `control` prefix in the northbound and southbound Command & Control endpoints has been renamed to `command`. 
@@ -227,7 +297,7 @@ which got deprecated, are planned to be dropped in 1.1.
   [Device Registry Admin Guide]({{% doclink "/admin-guide/device-registry-config/" %}}) 
   for details regarding the configuration properties to use.
 * There is now an official specification of an HTTP API for managing the content of a device registry.
-  The [HTTP Management API]({{% doclink "/api/device-registry-v1.yaml" %}}) is defined using by 
+  The [HTTP Management API]({{% doclink "/api/management" %}}) is defined using by 
   means of OpenAPI v3. Note, that the API is not yet implemented by the example device registry that comes with Hono.
 * The Command & Control feature now supports gateway agnostic addressing of devices. This means that applications are
   able to send commands to devices without knowing the particular gateway they may be connected to.
@@ -268,7 +338,7 @@ which got deprecated, are planned to be dropped in 1.1.
   as sender link address is still possible but gateway agnostic addressing of devices is not supported for 
   such command messages.
 
-### Depreciations
+### Deprecations
 
 * Instructions for script based deployment to Kubernetes have been removed from the deployment guide.
   Using Helm is now the only supported way of deploying Hono to Kubernetes.
@@ -384,7 +454,7 @@ which got deprecated, are planned to be dropped in 1.1.
   `org.eclipse.hono.client.HonoConnection` to better reflect its sole responsibility
   for establishing (and maintaining) the connection to a Hono service endpoint.
 
-### Depreciations
+### Deprecations
 
 * The optional operations defined by the Tenant, Device Registration and Credentials API
   have been deprecated. They will be removed from Hono 1.0 altogether.
@@ -410,7 +480,7 @@ which got deprecated, are planned to be dropped in 1.1.
 * The `org.eclipse.hono.service.tenant.CompleteBaseTenantService` class now rejects malformed
   encodings of public keys/certificates included in a request to add a trust anchor to a tenant.
 
-### Depreciations
+### Deprecations
 
 * The `HonoClient.closeCommandConsumer()` method will be removed in Hono 1.0.
   The `CommandConsumer.close()` method should be used instead.
@@ -461,7 +531,7 @@ which got deprecated, are planned to be dropped in 1.1.
   connection establishment but also for the SASL handshake and the exchange of the AMQP *open* frame.
 * The (already deprecated) Hono Messaging component has been removed from Hono.
 
-### Depreciations
+### Deprecations
 
 * The script based deployment to Kubernetes has been deprecated and will be removed in the next version.
   The Helm based deployment should be used instead.
@@ -505,7 +575,7 @@ which got deprecated, are planned to be dropped in 1.1.
   of the component that a metric has been reported by. Please refer to the [Metrics API]({{% doclink "/api/metrics/" %}})
   for details. Note that these changes do not affect the legacy Graphite based metrics back end.
 
-### Depreciations
+### Deprecations
 
 * The Hono Messaging component is now  deprecated and will be removed from Hono in version 0.9 altogether.
   The example deployment has not been using Hono Messaging since 0.6 and there is no practical reason for
@@ -595,7 +665,7 @@ which got deprecated, are planned to be dropped in 1.1.
   `release(int)` and `reject(ErrorCondition, int)` methods which all accept an integer indicating the number of credits to flow to the sender.
   These methods will also finish the OpenTracing span contained in the `CommandContext` implicitly.
 
-### Depreciations
+### Deprecations
 
 * The Kura protocol adapter is being deprecated with 0.8. It will still be part
   of Hono 0.8, but may be removed in a future version. Starting with Kura 4.0

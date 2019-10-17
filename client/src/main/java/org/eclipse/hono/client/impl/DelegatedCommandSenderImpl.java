@@ -134,7 +134,7 @@ public class DelegatedCommandSenderImpl extends AbstractSender implements Delega
                                 HttpURLConnection.HTTP_UNAVAILABLE,
                                 "waiting for delivery update timed out after "
                                         + connection.getConfig().getSendMessageTimeout() + "ms");
-                        LOG.debug("waiting for delivery update timed out for message [message ID: {}] after {}ms",
+                        log.debug("waiting for delivery update timed out for message [message ID: {}] after {}ms",
                                 messageId, connection.getConfig().getSendMessageTimeout());
                         result.fail(exception);
                     }
@@ -147,23 +147,23 @@ public class DelegatedCommandSenderImpl extends AbstractSender implements Delega
             }
             final DeliveryState remoteState = deliveryUpdated.getRemoteState();
             if (result.isComplete()) {
-                LOG.debug("ignoring received delivery update for message [message ID: {}]: waiting for the update has already timed out", messageId);
+                log.debug("ignoring received delivery update for message [message ID: {}]: waiting for the update has already timed out", messageId);
             } else if (deliveryUpdated.remotelySettled()) {
                 logUpdatedDeliveryState(currentSpan, messageId, deliveryUpdated);
                 result.complete(deliveryUpdated);
             } else {
-                LOG.debug("peer did not settle message [message ID: {}, remote state: {}], failing delivery",
-                        messageId, remoteState.getClass().getSimpleName());
+                log.debug("peer did not settle message [message ID: {}, remote state: {}], failing delivery",
+                        messageId, remoteState);
                 final ServiceInvocationException e = new ServerErrorException(
                         HttpURLConnection.HTTP_INTERNAL_ERROR,
                         "peer did not settle message, failing delivery");
                 result.fail(e);
             }
         });
-        LOG.trace("sent message [ID: {}], remaining credit: {}, queued messages: {}", messageId, sender.getCredit(), sender.getQueued());
+        log.trace("sent message [ID: {}], remaining credit: {}, queued messages: {}", messageId, sender.getCredit(), sender.getQueued());
 
         return result.map(delivery -> {
-            LOG.trace("message [ID: {}] accepted by peer", messageId);
+            log.trace("message [ID: {}] accepted by peer", messageId);
             Tags.HTTP_STATUS.set(currentSpan, HttpURLConnection.HTTP_ACCEPTED);
             currentSpan.finish();
             return delivery;
@@ -178,13 +178,9 @@ public class DelegatedCommandSenderImpl extends AbstractSender implements Delega
     @Override
     public Future<ProtonDelivery> sendCommandMessage(final Command command, final SpanContext spanContext) {
         Objects.requireNonNull(command);
-        final String tenantId = command.getTenant();
-        final String deviceId = command.getDeviceId();
-        final String targetAddress = getTargetAddress(tenantId, deviceId);
         final String replyToAddress = command.isOneWay() ? null
-                : String.format("%s/%s/%s", command.getReplyToEndpoint(), tenantId, command.getReplyToId());
-        return sendAndWaitForOutcome(
-                createDelegatedCommandMessage(command.getCommandMessage(), targetAddress, replyToAddress),
+                : String.format("%s/%s/%s", command.getReplyToEndpoint(), command.getTenant(), command.getReplyToId());
+        return sendAndWaitForOutcome(createDelegatedCommandMessage(command.getCommandMessage(), replyToAddress),
                 spanContext);
     }
 
@@ -201,14 +197,10 @@ public class DelegatedCommandSenderImpl extends AbstractSender implements Delega
                 Objects.requireNonNull(deviceId));
     }
 
-    private static Message createDelegatedCommandMessage(final Message originalMessage, final String targetAddress,
-            final String replyToAddress) {
-        Objects.requireNonNull(targetAddress);
+    private static Message createDelegatedCommandMessage(final Message originalMessage, final String replyToAddress) {
         Objects.requireNonNull(originalMessage);
         // copy original message
         final Message msg = MessageHelper.getShallowCopy(originalMessage);
-        // set target address
-        msg.setAddress(targetAddress);
         msg.setReplyTo(replyToAddress);
         // use original message id as correlation id
         msg.setCorrelationId(originalMessage.getMessageId());
@@ -219,19 +211,23 @@ public class DelegatedCommandSenderImpl extends AbstractSender implements Delega
      * Creates a new sender for sending the delegated command messages to the AMQP network.
      *
      * @param con The connection to the AMQP network.
-     * @param closeHook A handler to invoke if the peer closes the link unexpectedly.
+     * @param tenantId The tenant identifier.
+     * @param deviceId The device identifier.
+     * @param closeHook A handler to invoke if the peer closes the link unexpectedly (may be {@code null}).
      * @return A future indicating the result of the creation attempt.
      * @throws NullPointerException if con is {@code null}.
      */
     public static Future<DelegatedCommandSender> create(
             final HonoConnection con,
+            final String tenantId,
+            final String deviceId,
             final Handler<String> closeHook) {
 
         Objects.requireNonNull(con);
 
-        final String targetAddress = ""; // use anonymous relay (ie. use empty address)
+        final String targetAddress = getTargetAddress(tenantId, deviceId);
         return con.createSender(targetAddress, ProtonQoS.AT_LEAST_ONCE, closeHook)
-                .map(sender -> (DelegatedCommandSender) new DelegatedCommandSenderImpl(con, sender));
+                .map(sender -> new DelegatedCommandSenderImpl(con, sender));
     }
 
     @Override

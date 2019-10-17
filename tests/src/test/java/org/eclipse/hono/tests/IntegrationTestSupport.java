@@ -27,18 +27,25 @@ import java.security.cert.X509Certificate;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import org.eclipse.hono.client.HonoConnection;
 import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.config.ClientConfigProperties;
 import org.eclipse.hono.service.credentials.AbstractCredentialsServiceTest;
 import org.eclipse.hono.service.management.credentials.PasswordCredential;
+import org.eclipse.hono.service.management.device.Device;
 import org.eclipse.hono.util.BufferResult;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.TimeUntilDisconnectNotification;
@@ -243,7 +250,7 @@ public final class IntegrationTestSupport {
      * The name of the system property to use for setting the maximum number of BCrypt iterations supported
      * by Hono.
      */
-    public static final String PROPTERY_MAX_BCRYPT_ITERATIONS = "max.bcrypt.iterations";
+    public static final String PROPERTY_MAX_BCRYPT_ITERATIONS = "max.bcrypt.iterations";
 
 
     /**
@@ -370,12 +377,17 @@ public final class IntegrationTestSupport {
     /**
      * The maximum number of BCrypt iterations supported by Hono.
      */
-    public static final int    MAX_BCRYPT_ITERATIONS = Integer.getInteger(PROPTERY_MAX_BCRYPT_ITERATIONS, DEFAULT_MAX_BCRYPT_ITERATIONS);
+    public static final int    MAX_BCRYPT_ITERATIONS = Integer.getInteger(PROPERTY_MAX_BCRYPT_ITERATIONS, DEFAULT_MAX_BCRYPT_ITERATIONS);
 
     /**
      * The absolute path to the trust store to use for establishing secure connections with Hono.
      */
     public static final String TRUST_STORE_PATH = System.getProperty("trust-store.path");
+
+    /**
+     * Pattern used for the <em>name</em> field of the {@code @ParameterizedTest} annotation.
+     */
+    public static final String PARAMETERIZED_TEST_NAME_PATTERN = "{displayName} [{index}]; parameters: {arguments}";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(IntegrationTestSupport.class);
     private static final BCryptPasswordEncoder bcryptPwdEncoder = new BCryptPasswordEncoder(4);
@@ -507,6 +519,38 @@ public final class IntegrationTestSupport {
     }
 
     /**
+     * Connects to the AMQP 1.0 Messaging Network.
+     * <p>
+     * Also creates an HTTP client for accessing the Device Registry.
+     * 
+     * @return A future indicating the outcome of the operation.
+     */
+    public Future<?> init() {
+
+        return init(getMessagingNetworkProperties());
+    }
+
+    /**
+     * Connects to the AMQP 1.0 Messaging Network.
+     * <p>
+     * Also creates an HTTP client for accessing the Device Registry.
+     * 
+     * @param downstreamProps The properties for connecting to the AMQP Messaging
+     *                           Network.
+     * @return A future indicating the outcome of the operation.
+     */
+    public Future<?> init(final ClientConfigProperties downstreamProps) {
+
+        initRegistryClient();
+        applicationClientFactory = IntegrationTestApplicationClientFactory.create(HonoConnection.newConnection(vertx, downstreamProps));
+        return applicationClientFactory.connect()
+                .map(con -> {
+                    LOGGER.info("connected to AMQP Messaging Network [{}:{}]", downstreamProps.getHost(), downstreamProps.getPort());
+                    return Future.succeededFuture();
+                });
+    }
+
+    /**
      * Creates an HTTP client for accessing the Device Registry.
      */
     public void initRegistryClient() {
@@ -560,11 +604,12 @@ public final class IntegrationTestSupport {
     public void deleteObjects(final VertxTestContext ctx) {
 
         if (!devicesToDelete.isEmpty()) {
-            final Checkpoint deviceDeletion = ctx.checkpoint(devicesToDelete.size());
             devicesToDelete.forEach((tenantId, devices) -> {
+                final Checkpoint deviceDeletion = ctx.checkpoint(devices.size());
                 devices.forEach(deviceId -> {
                     registry.deregisterDevice(tenantId, deviceId).setHandler(ok -> deviceDeletion.flag());
                 });
+                LOGGER.debug("deleted {} devices from tenant {}", devicesToDelete.size(), tenantId);
             });
             devicesToDelete.clear();
         }
@@ -574,6 +619,7 @@ public final class IntegrationTestSupport {
             tenantsToDelete.forEach(tenantId -> {
                 registry.removeTenant(tenantId).setHandler(ok -> tenantDeletion.flag());
             });
+            LOGGER.debug("deleted {} tenants", tenantsToDelete.size());
             tenantsToDelete.clear();
         }
     }
@@ -591,6 +637,21 @@ public final class IntegrationTestSupport {
             shutdown.complete();
         }));
         shutdown.await();
+    }
+
+    /**
+     * Closes the connections to the AMQP 1.0 Messaging Network.
+     * 
+     * @return A future indicating the outcome of the operation.
+     */
+    public Future<?> disconnect() {
+
+        final Future<Void> result = Future.future();
+        applicationClientFactory.disconnect(result);
+        return result.map(ok -> {
+            LOGGER.info("connection to AMQP Messaging Network closed");
+            return ok;
+        });
     }
 
     /**
@@ -622,6 +683,58 @@ public final class IntegrationTestSupport {
     }
 
     /**
+     * Registers a new device for a tenant that is connected via the given gateway.
+     * 
+     * @param tenantId The tenant that the gateway and device belong to.
+     * @param gatewayId The gateway identifier.
+     * @param timeoutSeconds The number of seconds to wait for the setup to succeed.
+     * @return The device identifier of the newly registered device.
+     * @throws IllegalStateException if setup failed.
+     */
+    public String setupGatewayDeviceBlocking(
+            final String tenantId,
+            final String gatewayId,
+            final int timeoutSeconds) {
+
+        final CompletableFuture<String> result = new CompletableFuture<>();
+
+        setupGatewayDevice(tenantId, gatewayId)
+        .setHandler(attempt -> {
+            if (attempt.succeeded()) {
+                result.complete(attempt.result());
+            } else {
+                result.completeExceptionally(attempt.cause());
+            }
+        });
+
+        try {
+            return result.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            throw new IllegalStateException("could not set up gateway device", e);
+        }
+    }
+
+    /**
+     * Registers a new device for a tenant that is connected via the given gateway.
+     * 
+     * @param tenantId The tenant that the gateway and device belong to.
+     * @param gatewayId The gateway identifier.
+     * @return A future indicating the outcome of the operation.
+     *         The future will be completed with the device identifier of the newly
+     *         registered device or will be failed with a {@link ServiceInvocationException}.
+     */
+    public Future<String> setupGatewayDevice(final String tenantId, final String gatewayId) {
+
+        final Future<String> result = Future.future();
+        final String newDeviceId = getRandomDeviceId(tenantId);
+        final Device newDevice = new Device().setVia(List.of(gatewayId));
+        registry.addDeviceToTenant(tenantId, newDeviceId, newDevice, "pwd")
+                .map(ok -> newDeviceId)
+                .setHandler(result);
+        return result;
+    }
+
+    /**
      * Sends a command to a device.
      * 
      * @param notification The empty notification indicating the device's readiness to receive a command.
@@ -647,6 +760,37 @@ public final class IntegrationTestSupport {
                 payload,
                 properties,
                 notification.getMillisecondsUntilExpiry());
+    }
+
+    /**
+     * Sends a command to a device.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @param deviceId The identifier of the device.
+     * @param command The name of the command to send.
+     * @param contentType The type of the command's input data.
+     * @param payload The command's input data to send to the device.
+     * @param properties The headers to include in the command message as AMQP application properties.
+     * @param requestTimeout The number of milliseconds to wait for a response from the device.
+     * @param useLegacyEndpoint {@code true} if the legacy endpoint should be used for sending the command.
+     * @return A future that is either succeeded with the response payload from the device or
+     *         failed with a {@link ServiceInvocationException}.
+     */
+    public Future<BufferResult> sendCommand(
+            final String tenantId,
+            final String deviceId,
+            final String command,
+            final String contentType,
+            final Buffer payload,
+            final Map<String, Object> properties,
+            final long requestTimeout,
+            final boolean useLegacyEndpoint) {
+
+        if (useLegacyEndpoint) {
+            return sendLegacyCommand(tenantId, deviceId, command, contentType, payload, properties, requestTimeout);
+        } else {
+            return sendCommand(tenantId, deviceId, command, contentType, payload, properties, requestTimeout);
+        }
     }
 
     /**
@@ -699,6 +843,55 @@ public final class IntegrationTestSupport {
     }
 
     /**
+     * Sends a command to a device using the north bound legacy endpoint.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @param deviceId The identifier of the device.
+     * @param command The name of the command to send.
+     * @param contentType The type of the command's input data.
+     * @param payload The command's input data to send to the device.
+     * @param properties The headers to include in the command message as AMQP application properties.
+     * @param requestTimeout The number of milliseconds to wait for a response from the device.
+     * @return A future that is either succeeded with the response payload from the device or
+     *         failed with a {@link ServiceInvocationException}.
+     */
+    public Future<BufferResult> sendLegacyCommand(
+            final String tenantId,
+            final String deviceId,
+            final String command,
+            final String contentType,
+            final Buffer payload,
+            final Map<String, Object> properties,
+            final long requestTimeout) {
+
+        return applicationClientFactory.createLegacyCommandClient(tenantId, deviceId).compose(commandClient -> {
+
+            commandClient.setRequestTimeout(requestTimeout);
+            final Future<BufferResult> result = Future.future();
+            final Handler<Void> send = s -> {
+                // send the command upstream to the device
+                LOGGER.trace("sending legacy command [name: {}, contentType: {}, payload: {}]", command, contentType, payload);
+                commandClient.sendCommand(command, contentType, payload, properties).map(responsePayload -> {
+                    LOGGER.debug("successfully sent legacy command [name: {}, payload: {}] and received response [payload: {}]",
+                            command, payload, responsePayload);
+                    commandClient.close(v -> {});
+                    return responsePayload;
+                }).recover(t -> {
+                    LOGGER.debug("could not send legacy command or did not receive a response: {}", t.getMessage());
+                    commandClient.close(v -> {});
+                    return Future.failedFuture(t);
+                }).setHandler(result);
+            };
+            if (commandClient.getCredit() == 0) {
+                commandClient.sendQueueDrainHandler(send);
+            } else {
+                send.handle(null);
+            }
+            return result;
+        });
+    }
+
+    /**
      * Sends a one-way command to a device.
      * 
      * @param notification The empty notification indicating the device's readiness to receive a command.
@@ -724,6 +917,37 @@ public final class IntegrationTestSupport {
                 payload,
                 properties,
                 notification.getMillisecondsUntilExpiry());
+    }
+
+    /**
+     * Sends a one-way command to a device.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @param deviceId The identifier of the device.
+     * @param command The name of the command to send.
+     * @param contentType The type of the command's input data.
+     * @param payload The command's input data to send to the device.
+     * @param properties The headers to include in the command message as AMQP application properties.
+     * @param requestTimeout The number of milliseconds to wait for the command being sent to the device.
+     * @param useLegacyEndpoint {@code true} if the legacy endpoint should be used for sending the command.
+     * @return A future that is either succeeded if the command has been sent to the device or
+     *         failed with a {@link ServiceInvocationException}.
+     */
+    public Future<Void> sendOneWayCommand(
+            final String tenantId,
+            final String deviceId,
+            final String command,
+            final String contentType,
+            final Buffer payload,
+            final Map<String, Object> properties,
+            final long requestTimeout,
+            final boolean useLegacyEndpoint) {
+
+        if (useLegacyEndpoint) {
+            return sendLegacyOneWayCommand(tenantId, deviceId, command, contentType, payload, properties, requestTimeout);
+        } else {
+            return sendOneWayCommand(tenantId, deviceId, command, contentType, payload, properties, requestTimeout);
+        }
     }
 
     /**
@@ -772,6 +996,71 @@ public final class IntegrationTestSupport {
             }
             return result;
         });
+    }
+
+    /**
+     * Sends a one-way command to a device using the north bound legacy endpoint.
+     * 
+     * @param tenantId The tenant that the device belongs to.
+     * @param deviceId The identifier of the device.
+     * @param command The name of the command to send.
+     * @param contentType The type of the command's input data.
+     * @param payload The command's input data to send to the device.
+     * @param properties The headers to include in the command message as AMQP application properties.
+     * @param requestTimeout The number of milliseconds to wait for the command being sent to the device.
+     * @return A future that is either succeeded if the command has been sent to the device or
+     *         failed with a {@link ServiceInvocationException}.
+     */
+    public Future<Void> sendLegacyOneWayCommand(
+            final String tenantId,
+            final String deviceId,
+            final String command,
+            final String contentType,
+            final Buffer payload,
+            final Map<String, Object> properties,
+            final long requestTimeout) {
+
+        return applicationClientFactory.createLegacyCommandClient(tenantId, deviceId).compose(commandClient -> {
+
+            commandClient.setRequestTimeout(requestTimeout);
+            final Future<Void> result = Future.future();
+            final Handler<Void> send = s -> {
+                // send the command upstream to the device
+                LOGGER.trace("sending one-way command [name: {}, contentType: {}, payload: {}]", command, contentType, payload);
+                commandClient.sendOneWayCommand(command, contentType, payload, properties).map(ok -> {
+                    LOGGER.debug("successfully sent legacy one-way command [name: {}, payload: {}]", command, payload);
+                    commandClient.close(v -> {});
+                    return (Void) null;
+                }).recover(t -> {
+                    LOGGER.debug("could not send legacy one-way command: {}", t.getMessage());
+                    commandClient.close(v -> {});
+                    return Future.failedFuture(t);
+                }).setHandler(result);
+            };
+            if (commandClient.getCredit() == 0) {
+                commandClient.sendQueueDrainHandler(send);
+            } else {
+                send.handle(null);
+            }
+            return result;
+        });
+    }
+
+    /**
+     * Gets the properties to be set on a command message.
+     *
+     * @param forceCommandRerouting Supplies the value for the "force-command-rerouting" property. A {@code true}
+     *                              value of this property causes the command message to be rerouted to the
+     *                              AMQP messaging network, mimicking the behaviour when the command message
+     *                              has reached a protocol adapter instance that the command target device is
+     *                              not connected to, so that the message needs to be delegated to the correct
+     *                              protocol adapter instance. See the <em>CommandConsumerFactoryImpl</em> class.
+     * @return The properties map.
+     */
+    public static Map<String, Object> newCommandMessageProperties(final Supplier<Boolean> forceCommandRerouting) {
+        final HashMap<String, Object> properties = new HashMap<>();
+        properties.put("force-command-rerouting", forceCommandRerouting.get());
+        return properties;
     }
 
     /**

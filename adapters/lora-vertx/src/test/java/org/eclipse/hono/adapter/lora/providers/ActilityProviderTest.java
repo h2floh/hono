@@ -13,11 +13,14 @@
 
 package org.eclipse.hono.adapter.lora.providers;
 
+import io.vertx.core.json.JsonObject;
+import io.vertx.core.json.JsonArray;
+import org.eclipse.hono.adapter.lora.LoraConstants;
 import org.eclipse.hono.adapter.lora.LoraMessageType;
 import org.junit.Assert;
 import org.junit.Test;
 
-import io.vertx.core.json.JsonObject;
+import java.util.Map;
 
 /**
  * Verifies behavior of {@link ActilityProvider}.
@@ -67,6 +70,34 @@ public class ActilityProviderTest {
         loraMessage.put("bumlux", "bumlux");
         final LoraMessageType type = provider.extractMessageType(loraMessage);
         Assert.assertEquals(LoraMessageType.UNKNOWN, type);
+    }
+
+    /**
+     * Verifies that the extracted rssi matches 48.
+     */
+    @Test
+    public void extractRssiFromLoraMessage() {
+        final JsonObject loraMessage = LoraTestUtil.loadTestFile("actility.uplink");
+        final Map<String, Object> map = provider.extractNormalizedData(loraMessage);
+        Assert.assertTrue(map.containsKey(LoraConstants.APP_PROPERTY_RSS));
+        Assert.assertEquals(48.0, map.getOrDefault(LoraConstants.APP_PROPERTY_RSS, null));
+    }
+
+    /**
+     * Verifies that the extracted gateways are correct.
+     */
+    @Test
+    public void extractGatewaysFromLoraMessage() {
+        final JsonObject loraMessage = LoraTestUtil.loadTestFile("actility.uplink");
+        final Map<String, Object> map = provider.extractNormalizedData(loraMessage);
+        Assert.assertTrue(map.containsKey(LoraConstants.GATEWAYS));
+
+        final JsonArray expectedArray = new JsonArray();
+        expectedArray.add(new JsonObject().put("gateway_id", "18035559").put("rss", 48.0).put("snr", 3.0));
+        expectedArray.add(new JsonObject().put("gateway_id", "18035560").put("rss", 49.0).put("snr", 4.0));
+
+        final JsonArray gateways = new JsonArray(map.get(LoraConstants.GATEWAYS).toString());
+        Assert.assertEquals(expectedArray, gateways);
     }
 
 }

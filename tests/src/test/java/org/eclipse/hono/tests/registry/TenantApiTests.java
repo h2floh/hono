@@ -20,16 +20,20 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
+import java.security.cert.TrustAnchor;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
 import javax.security.auth.x500.X500Principal;
 
 import org.eclipse.hono.client.TenantClient;
 import org.eclipse.hono.service.management.tenant.Adapter;
-import org.eclipse.hono.service.management.tenant.ResourceLimits;
 import org.eclipse.hono.service.management.tenant.Tenant;
 import org.eclipse.hono.tests.Tenants;
 import org.eclipse.hono.util.Constants;
+import org.eclipse.hono.util.DataVolume;
+import org.eclipse.hono.util.DataVolumePeriod;
+import org.eclipse.hono.util.ResourceLimits;
 import org.eclipse.hono.util.TenantConstants;
 import org.eclipse.hono.util.TenantObject;
 import org.junit.jupiter.api.Test;
@@ -74,14 +78,15 @@ abstract class TenantApiTests extends DeviceRegistryTestBase {
                 .put("deployment", new JsonObject()
                         .put("maxInstances", 4));
 
-        final JsonObject dataVolume = new JsonObject()
-                        .put("max-bytes", 2147483648L)
-                        .put("period-in-days", 30)
-                        .put("effective-since", "2019-04-27T12:00:00+00:00");
-
-        final ResourceLimits resourceLimits = new ResourceLimits();
-        resourceLimits.setMaxConnections(100000);
-        resourceLimits.putExtension("data-volume", dataVolume.getMap());
+        final ResourceLimits resourceLimits = new ResourceLimits()
+                .setMaxConnections(100000)
+                .setMaxTtl(30L)
+                .setDataVolume(new DataVolume()
+                        .setMaxBytes(2147483648L)
+                        .setEffectiveSince(Instant.parse("2019-07-27T14:30:00Z"))
+                        .setPeriod(new DataVolumePeriod()
+                                .setMode("days")
+                                .setNoOfDays(30)));
 
         final String tenantId = getHelper().getRandomTenantId();
         final Tenant tenant = new Tenant();
@@ -102,10 +107,7 @@ abstract class TenantApiTests extends DeviceRegistryTestBase {
         // expected tenant object
         final TenantObject expectedTenantObject = TenantObject.from(tenantId, true)
                 .setDefaults(defaults)
-                .setResourceLimits(new JsonObject()
-                        .put("max-connections", 100000)
-                        .put("ext", new JsonObject()
-                                .put("data-volume", dataVolume)))
+                .setResourceLimits(resourceLimits)
                 .setAdapterConfigurations(new JsonArray()
                         .add(new JsonObject()
                                 .put(TenantConstants.FIELD_ADAPTERS_TYPE, Constants.PROTOCOL_ADAPTER_TYPE_MQTT)
@@ -123,9 +125,20 @@ abstract class TenantApiTests extends DeviceRegistryTestBase {
         .compose(ok -> getAdminClient().get(tenantId))
         .setHandler(ctx.succeeding(tenantObject -> {
             ctx.verify(() -> {
-                assertThat(tenantObject.getResourceLimits()).isEqualTo(expectedTenantObject.getResourceLimits());
                 assertThat(tenantObject.getDefaults()).isEqualTo(expectedTenantObject.getDefaults());
                 assertThat(tenantObject.getAdapterConfigurations()).isEqualTo(expectedTenantObject.getAdapterConfigurations());
+                assertThat(tenantObject.getResourceLimits().getMaxConnections())
+                        .isEqualTo(expectedTenantObject.getResourceLimits().getMaxConnections());
+                assertThat(tenantObject.getResourceLimits().getMaxTtl())
+                .isEqualTo(expectedTenantObject.getResourceLimits().getMaxTtl());
+                assertThat(tenantObject.getResourceLimits().getDataVolume().getMaxBytes())
+                        .isEqualTo(expectedTenantObject.getResourceLimits().getDataVolume().getMaxBytes());
+                assertThat(tenantObject.getResourceLimits().getDataVolume().getEffectiveSince()).isEqualTo(
+                        expectedTenantObject.getResourceLimits().getDataVolume().getEffectiveSince());
+                assertThat(tenantObject.getResourceLimits().getDataVolume().getPeriod().getMode()).isEqualTo(
+                        expectedTenantObject.getResourceLimits().getDataVolume().getPeriod().getMode());
+                assertThat(tenantObject.getResourceLimits().getDataVolume().getPeriod().getNoOfDays())
+                        .isEqualTo(expectedTenantObject.getResourceLimits().getDataVolume().getPeriod().getNoOfDays());
                 assertThat(tenantObject.getProperty("ext", JsonObject.class).getString("customer")).isEqualTo("ACME Inc.");
             });
             ctx.completeNow();
@@ -194,8 +207,10 @@ abstract class TenantApiTests extends DeviceRegistryTestBase {
         .setHandler(ctx.succeeding(tenantObject -> {
             ctx.verify(() -> {
                 assertThat(tenantObject.getTenantId()).isEqualTo(tenantId);
-                assertThat(tenantObject.getTrustedCaSubjectDn()).isEqualTo(subjectDn);
-                assertThat(tenantObject.getTrustAnchor().getCAPublicKey()).isEqualTo(publicKey);
+                assertThat(tenantObject.getTrustAnchors()).size().isEqualTo(1);
+                final TrustAnchor trustAnchor = tenantObject.getTrustAnchors().iterator().next();
+                assertThat(trustAnchor.getCA()).isEqualTo(subjectDn);
+                assertThat(trustAnchor.getCAPublicKey()).isEqualTo(publicKey);
             });
             ctx.completeNow();
         }));

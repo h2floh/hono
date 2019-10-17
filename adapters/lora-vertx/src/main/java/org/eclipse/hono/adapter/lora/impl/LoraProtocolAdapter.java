@@ -13,19 +13,15 @@
 
 package org.eclipse.hono.adapter.lora.impl;
 
-import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
-import static java.net.HttpURLConnection.HTTP_INTERNAL_ERROR;
-import static java.net.HttpURLConnection.HTTP_OK;
-
+import java.net.HttpURLConnection;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import io.vertx.core.buffer.impl.BufferImpl;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
 import org.apache.qpid.proton.message.Message;
 import org.eclipse.hono.adapter.http.AbstractVertxBasedHttpProtocolAdapter;
@@ -68,6 +64,7 @@ import io.opentracing.tag.Tags;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferImpl;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.DecodeException;
@@ -92,8 +89,6 @@ public final class LoraProtocolAdapter extends AbstractVertxBasedHttpProtocolAda
     private static final String TAG_LORA_PROVIDER = "lora_provider";
     private static final String JSON_MISSING_REQUIRED_FIELDS = "JSON Body does not contain required fields";
     private static final String INVALID_PAYLOAD = "Invalid payload";
-    private static final String FIELD_BINARY_PAYLOAD = "payload";
-    private static final String FIELD_ORIG_UPLINK_MESSAGE = "orig-message";
 
     private final List<LoraProvider> loraProviders = new ArrayList<>();
 
@@ -159,6 +154,7 @@ public final class LoraProtocolAdapter extends AbstractVertxBasedHttpProtocolAda
         }
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     protected void customizeDownstreamMessage(final Message downstreamMessage, final RoutingContext ctx) {
         MessageHelper.addProperty(downstreamMessage, LoraConstants.APP_PROPERTY_ORIG_LORA_PROVIDER,
@@ -409,12 +405,12 @@ public final class LoraProtocolAdapter extends AbstractVertxBasedHttpProtocolAda
                                                                 "Error sending command to device {}. Sending error response "
                                                                         + "to application with code [{}]",
                                                                 commandData.getTargetDeviceId(),
-                                                                HTTP_INTERNAL_ERROR, sendCommandFailure);
+                                                                HttpURLConnection.HTTP_INTERNAL_ERROR, sendCommandFailure);
 
                                                         TracingHelper.logError(receivedCommandContext.getCurrentSpan(),
                                                                 sendCommandFailure);
                                                         sendResponseToApplication(command, loraDeviceId,
-                                                                getHttpResponseWithCode(HTTP_INTERNAL_ERROR,
+                                                                getHttpResponseWithCode(HttpURLConnection.HTTP_INTERNAL_ERROR,
                                                                         sendCommandFailure.getMessage()),
                                                                 receivedCommandContext.getCurrentSpan().context());
                                                         return null;
@@ -422,22 +418,22 @@ public final class LoraProtocolAdapter extends AbstractVertxBasedHttpProtocolAda
                                             return Future.succeededFuture();
                                         }).otherwise(registrationAssertionFailure -> {
                                             LOG.error("Error asserting device registration. Sending error response to "
-                                                    + "application with code [{}]", HTTP_FORBIDDEN,
+                                                    + "application with code [{}]", HttpURLConnection.HTTP_FORBIDDEN,
                                                     registrationAssertionFailure);
                                             TracingHelper.logError(receivedCommandContext.getCurrentSpan(),
                                                     registrationAssertionFailure);
                                             sendResponseToApplication(command, loraDeviceId,
-                                                    getHttpResponseWithCode(HTTP_FORBIDDEN,
+                                                    getHttpResponseWithCode(HttpURLConnection.HTTP_FORBIDDEN,
                                                             registrationAssertionFailure.getMessage()),
                                                     receivedCommandContext.getCurrentSpan().context());
                                             return null;
                                         }))
                         .otherwise(loraGatewayException -> {
                             LOG.error("Error getting lora device gateway. Sending error response to application with "
-                                    + "code [{}]", HTTP_INTERNAL_ERROR, loraGatewayException);
+                                    + "code [{}]", HttpURLConnection.HTTP_INTERNAL_ERROR, loraGatewayException);
                             TracingHelper.logError(receivedCommandContext.getCurrentSpan(), loraGatewayException);
                             sendResponseToApplication(command, loraDeviceId,
-                                    getHttpResponseWithCode(HTTP_INTERNAL_ERROR,
+                                    getHttpResponseWithCode(HttpURLConnection.HTTP_INTERNAL_ERROR,
                                             loraGatewayException.getMessage()),
                                     receivedCommandContext.getCurrentSpan().context());
                             return null;
@@ -491,7 +487,7 @@ public final class LoraProtocolAdapter extends AbstractVertxBasedHttpProtocolAda
                     commandData.getTargetDeviceId(), commandData.getCommand()).setHandler(r -> {
                         if (r.succeeded()) {
                             LOG.debug("Successfully sent message to lora provider");
-                            responseHandler.complete(getHttpResponseWithCode(HTTP_OK, "OK"));
+                            responseHandler.complete(getHttpResponseWithCode(HttpURLConnection.HTTP_OK, "OK"));
                         } else {
                             LOG.error("Got error from lora provider", r.cause());
                             responseHandler

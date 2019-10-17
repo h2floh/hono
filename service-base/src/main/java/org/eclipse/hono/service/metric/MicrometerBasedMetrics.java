@@ -20,8 +20,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
+import org.eclipse.hono.config.ProtocolAdapterProperties;
 import org.eclipse.hono.service.metric.MetricsTags.Direction;
 import org.eclipse.hono.service.metric.MetricsTags.ProcessingOutcome;
+import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.TenantObject;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -30,9 +32,16 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.Timer.Sample;
+import io.vertx.core.Vertx;
 
 /**
  * Micrometer based metrics implementation.
+ * <p>
+ * This implementation monitors the {@code TenantIdleTimeout}, if configured to a non zero duration
+ * ({@link ProtocolAdapterProperties#setTenantIdleTimeout(java.time.Duration)}). If the tenant had not interacted with
+ * the protocol adapter instance for the configured period, it stops reporting metrics for that tenant and publishes an
+ * event on the event bus. The event bus address is {@link Constants#EVENT_BUS_ADDRESS_TENANT_TIMED_OUT} and the body of
+ * the message is the tenantId.
  */
 public class MicrometerBasedMetrics implements Metrics {
 
@@ -61,39 +70,55 @@ public class MicrometerBasedMetrics implements Metrics {
      */
     public static final String METER_COMMANDS_RECEIVED = "hono.commands.received";
 
+    private static final long DEFAULT_TENANT_IDLE_TIMEOUT = ProtocolAdapterProperties.DEFAULT_TENANT_IDLE_TIMEOUT
+            .toMillis();
+
     /**
      * The meter registry.
      */
     protected final MeterRegistry registry;
 
     private final Map<String, AtomicLong> authenticatedConnections = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastSeenTimestampPerTenant = new ConcurrentHashMap<>();
     private final AtomicLong unauthenticatedConnections;
     private final AtomicInteger totalCurrentConnections = new AtomicInteger();
-
-    private LegacyMetrics legacyMetrics;
+    private final Vertx vertx;
+    private long tenantIdleTimeout = DEFAULT_TENANT_IDLE_TIMEOUT;
 
     /**
      * Creates a new metrics instance.
      * 
      * @param registry The meter registry to use.
-     * @throws NullPointerException if registry is {@code null}.
+     * @param vertx The Vert.x instance to use.
+     * @throws NullPointerException if registry or vertx is {@code null}.
      */
-    protected MicrometerBasedMetrics(final MeterRegistry registry) {
+    protected MicrometerBasedMetrics(final MeterRegistry registry, final Vertx vertx) {
 
         Objects.requireNonNull(registry);
+        Objects.requireNonNull(vertx);
 
         this.registry = registry;
+        this.vertx = vertx;
+
+        this.registry.config().onMeterRemoved(meter -> {
+            // execution is synchronized in MeterRegistry#remove(Meter)
+            if (METER_CONNECTIONS_AUTHENTICATED.equals(meter.getId().getName())) {
+                authenticatedConnections.remove(meter.getId().getTag(MetricsTags.TAG_TENANT));
+            }
+        });
         this.unauthenticatedConnections = registry.gauge(METER_CONNECTIONS_UNAUTHENTICATED, new AtomicLong());
     }
 
     /**
-     * Sets the legacy metrics.
+     * Sets the protocol adapter configuration.
      * 
-     * @param legacyMetrics The additional legacy metrics to report.
+     * @param config The protocol adapter configuration.
+     * @throws NullPointerException if config is {@code null}.
      */
     @Autowired(required = false)
-    public final void setLegacyMetrics(final LegacyMetrics legacyMetrics) {
-        this.legacyMetrics = legacyMetrics;
+    public void setProtocolAdapterProperties(final ProtocolAdapterProperties config) {
+        Objects.requireNonNull(config);
+        this.tenantIdleTimeout = config.getTenantIdleTimeout().toMillis();
     }
 
     @Override
@@ -103,6 +128,7 @@ public class MicrometerBasedMetrics implements Metrics {
         gaugeForTenant(METER_CONNECTIONS_AUTHENTICATED, this.authenticatedConnections, tenantId, AtomicLong::new)
                 .incrementAndGet();
         this.totalCurrentConnections.incrementAndGet();
+        updateLastSeenTimestamp(tenantId);
 
     }
 
@@ -113,6 +139,7 @@ public class MicrometerBasedMetrics implements Metrics {
         gaugeForTenant(METER_CONNECTIONS_AUTHENTICATED, this.authenticatedConnections, tenantId, AtomicLong::new)
                 .decrementAndGet();
         this.totalCurrentConnections.decrementAndGet();
+        updateLastSeenTimestamp(tenantId);
 
     }
 
@@ -190,34 +217,7 @@ public class MicrometerBasedMetrics implements Metrics {
             .register(this.registry)
             .record(calculatePayloadSize(payloadSize, tenantObject));
 
-        if (legacyMetrics != null) {
-
-             // Some of the legacy metrics are based on different meter types
-             // than the ones used now. It is necessary to report the legacy
-             // metric in addition to the new ones because the meter types
-             // are incompatible (e.g. duration vs. occurrences).
-            switch(outcome) {
-            case FORWARDED:
-                legacyMetrics.incrementProcessedMessages(type, tenantId);
-                break;
-            case UNDELIVERABLE:
-                legacyMetrics.incrementUndeliverableMessages(type, tenantId);
-                break;
-            case UNPROCESSABLE:
-                // no corresponding legacy metric
-            }
-
-            // The legacy metrics contain a separate metric for
-            // counting the number of messages that contained
-            // an expired TTD value.
-            switch(ttdStatus) {
-            case EXPIRED:
-                legacyMetrics.incrementNoCommandReceivedAndTTDExpired(tenantId);
-                break;
-            default:
-                // nothing to do
-            }
-        }
+        updateLastSeenTimestamp(tenantId);
     }
 
     @Override
@@ -252,18 +252,7 @@ public class MicrometerBasedMetrics implements Metrics {
             .register(this.registry)
             .record(calculatePayloadSize(payloadSize, tenantObject));
 
-        if (legacyMetrics != null) {
-
-            switch(direction) {
-            case ONE_WAY:
-            case REQUEST:
-                legacyMetrics.incrementCommandDeliveredToDevice(tenantId);
-                break;
-            case RESPONSE:
-                legacyMetrics.incrementCommandResponseDeliveredToApplication(tenantId);
-                break;
-            }
-        }
+        updateLastSeenTimestamp(tenantId);
     }
 
     /**
@@ -341,5 +330,69 @@ public class MicrometerBasedMetrics implements Metrics {
             }
         }
         return payloadSize;
+    }
+
+    // visible for testing
+    Map<String, Long> getLastSeenTimestampPerTenant() {
+        return lastSeenTimestampPerTenant;
+    }
+
+    private void updateLastSeenTimestamp(final String tenantId) {
+        if (tenantIdleTimeout == DEFAULT_TENANT_IDLE_TIMEOUT) {
+            return;
+        }
+
+        final Long previousVal = lastSeenTimestampPerTenant.put(tenantId, System.currentTimeMillis());
+        if (previousVal == null) {
+            newTenantTimeoutTimer(tenantId, tenantIdleTimeout);
+        }
+    }
+
+    private void newTenantTimeoutTimer(final String tenantId, final long delay) {
+        vertx.setTimer(delay, id -> {
+            final Long lastSeen = lastSeenTimestampPerTenant.get(tenantId);
+            final long remaining = tenantIdleTimeout - (System.currentTimeMillis() - lastSeen);
+
+            if (remaining > 0) {
+                newTenantTimeoutTimer(tenantId, remaining);
+            } else {
+                if (!isConnected(tenantId) && lastSeenTimestampPerTenant.remove(tenantId, lastSeen)) {
+                    handleTenantTimeout(tenantId);
+                } else { // not ready -> reset timeout
+                    newTenantTimeoutTimer(tenantId, tenantIdleTimeout);
+                }
+            }
+        });
+    }
+
+    private boolean isConnected(final String tenantId) {
+        final AtomicLong count = authenticatedConnections.get(tenantId);
+        return count != null && count.get() > 0;
+    }
+
+    /**
+     * <b> On synchronization: </b>
+     * <p>
+     * Each remove operation ({@link MeterRegistry#remove(io.micrometer.core.instrument.Meter)}) is synchronized
+     * internally. The removal operations are not synchronized together.
+     * </p>
+     * <b>Rationale:</b>
+     * <p>
+     * It is a) unlikely that a tenant connects during the cleanup (timeout is rather in hours than in very small time
+     * units). And b) if it happens, a metrics would temporarily be not 100% accurate. This does not justify additional
+     * locking for every message that is send to Hono.
+     */
+    private void handleTenantTimeout(final String tenantId) {
+        final Tags tenantTag = Tags.of(MetricsTags.getTenantTag(tenantId));
+
+        // the onMeterRemoved() handler removes it also from this.authenticatedConnections
+        registry.find(METER_CONNECTIONS_AUTHENTICATED).tags(tenantTag).meters().forEach(registry::remove);
+
+        registry.find(METER_MESSAGES_PAYLOAD).tags(tenantTag).meters().forEach(registry::remove);
+        registry.find(METER_MESSAGES_RECEIVED).tags(tenantTag).meters().forEach(registry::remove);
+        registry.find(METER_COMMANDS_PAYLOAD).tags(tenantTag).meters().forEach(registry::remove);
+        registry.find(METER_COMMANDS_RECEIVED).tags(tenantTag).meters().forEach(registry::remove);
+
+        vertx.eventBus().publish(Constants.EVENT_BUS_ADDRESS_TENANT_TIMED_OUT, tenantId);
     }
 }

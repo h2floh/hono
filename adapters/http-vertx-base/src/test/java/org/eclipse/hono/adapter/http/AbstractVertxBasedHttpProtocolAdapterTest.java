@@ -15,6 +15,7 @@ package org.eclipse.hono.adapter.http;
 
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -55,7 +56,7 @@ import org.eclipse.hono.service.metric.MetricsTags.EndpointType;
 import org.eclipse.hono.service.metric.MetricsTags.ProcessingOutcome;
 import org.eclipse.hono.service.metric.MetricsTags.QoS;
 import org.eclipse.hono.service.metric.MetricsTags.TtdStatus;
-import org.eclipse.hono.service.plan.ResourceLimitChecks;
+import org.eclipse.hono.service.resourcelimits.ResourceLimitChecks;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.EventConstants;
 import org.eclipse.hono.util.MessageHelper;
@@ -451,6 +452,39 @@ public class AbstractVertxBasedHttpProtocolAdapterTest {
     }
 
     /**
+     * Verifies that the adapter uses the time to live value set in the down stream event message.
+     */
+    @SuppressWarnings("unchecked")
+    @Test
+    public void testUploadEventWithTimeToLive() {
+        // GIVEN an adapter with a downstream event consumer attached
+        final Future<ProtonDelivery> outcome = Future.future();
+        final DownstreamSender sender = givenAnEventSenderForOutcome(outcome);
+
+        final HttpServer server = getHttpServer(false);
+        final AbstractVertxBasedHttpProtocolAdapter<HttpProtocolAdapterProperties> adapter = getAdapter(server, null);
+
+        // WHEN a device publishes an event with a time to live value as a header
+        final Buffer payload = Buffer.buffer("some payload");
+        final HttpServerResponse response = mock(HttpServerResponse.class);
+        final HttpServerRequest request = mock(HttpServerRequest.class);
+        when(request.getHeader(eq(Constants.HEADER_TIME_TO_LIVE))).thenReturn("10");
+        final RoutingContext ctx = newRoutingContext(payload, "application/text", request, response);
+        when(ctx.addBodyEndHandler(any(Handler.class))).thenAnswer(invocation -> {
+            final Handler<Void> handler = invocation.getArgument(0);
+            handler.handle(null);
+            return 0;
+        });
+
+        adapter.uploadEventMessage(ctx, "tenant", "device");
+
+        // verifies that the downstream message contains the time to live value
+        final ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(sender).sendAndWaitForOutcome(messageCaptor.capture(), any());
+        assertEquals(10L * 1000, messageCaptor.getValue().getTtl());
+    }
+
+    /**
      * Verifies that the adapter waits for a command response being settled and accepted
      * by a downstream peer before responding with a 202 status to the device.
      */
@@ -753,8 +787,12 @@ public class AbstractVertxBasedHttpProtocolAdapterTest {
 
         // WHEN a device publishes a telemetry message that belongs to a tenant with
         // a max TTD of 20 secs
-        when(tenantClient.get(eq("tenant"), (SpanContext) any())).thenReturn(
-            Future.succeededFuture(TenantObject.from("tenant", true).setProperty(TenantConstants.FIELD_MAX_TTD, 20)));
+        when(tenantClient.get(eq("tenant"), any())).thenReturn(
+                Future.succeededFuture(TenantObject.from("tenant", true)
+                        .addAdapterConfiguration(
+                                TenantObject.newAdapterConfig(ADAPTER_TYPE, true)
+                                        .put(TenantConstants.FIELD_EXT, new JsonObject()
+                                                .put(TenantConstants.FIELD_MAX_TTD, 20)))));
 
         // and includes a TTD value of 40 in its request
         final Buffer payload = Buffer.buffer("some payload");

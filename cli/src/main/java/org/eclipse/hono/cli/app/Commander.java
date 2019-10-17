@@ -13,6 +13,7 @@
 
 package org.eclipse.hono.cli.app;
 
+import java.net.HttpURLConnection;
 import java.util.Optional;
 import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +22,7 @@ import javax.annotation.PostConstruct;
 
 import org.eclipse.hono.client.CommandClient;
 import org.eclipse.hono.client.HonoConnection;
+import org.eclipse.hono.client.ServerErrorException;
 import org.eclipse.hono.util.BufferResult;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
@@ -70,17 +72,18 @@ public class Commander extends AbstractApplicationClient {
 
     private Future<Void> processCommand(final Command command) {
 
-        LOG.info("Command sent to device... [request will timeout in {} seconds]", requestTimeoutInSecs);
-
         final Future<CommandClient> commandClient = clientFactory.getOrCreateCommandClient(tenantId);
         return commandClient
                 .map(this::setRequestTimeOut)
                 .compose(c -> {
                     if (command.isOneWay()) {
+                        log.info("Command sent to device");
                         return c.sendOneWayCommand(deviceId, command.getName(), command.getContentType(),
                                 Buffer.buffer(command.getPayload()), null)
                                 .map(ok -> c);
                     } else {
+                        log.info("Command sent to device... [waiting for response for max. {} seconds]",
+                                requestTimeoutInSecs);
                         return c.sendCommand(deviceId, command.getName(), command.getContentType(),
                                 Buffer.buffer(command.getPayload()), null)
                                 .map(this::printResponse)
@@ -89,7 +92,13 @@ public class Commander extends AbstractApplicationClient {
                 })
                 .map(this::closeCommandClient)
                 .otherwise(error -> {
-                    LOG.error("Error sending command: {}", error.getMessage());
+                    if (ServerErrorException.extractStatusCode(error) == HttpURLConnection.HTTP_UNAVAILABLE) {
+                        log.error(
+                                "Error sending command (error code 503). Is the device really waiting for a command? (device [{}] in tenant [{}])",
+                                deviceId, tenantId);
+                    } else {
+                        log.error("Error sending command: {}", error.getMessage());
+                    }
                     if (commandClient.succeeded()) {
                         return closeCommandClient(commandClient.result());
                     } else {
@@ -104,15 +113,15 @@ public class Commander extends AbstractApplicationClient {
     }
 
     private Void closeCommandClient(final CommandClient commandClient) {
-        LOG.trace("Close command connection to device [{}:{}]", tenantId, deviceId);
+        log.trace("Close command connection to device [{}:{}]", tenantId, deviceId);
         commandClient.close(closeHandler -> {
         });
         return null;
     }
 
     private Void printResponse(final BufferResult result) {
-        LOG.info("Received Command response : {}",
-                Optional.ofNullable(result.getPayload()).orElse(Buffer.buffer()).toString());
+        log.info("Received Command response : {}",
+                Optional.ofNullable(result.getPayload()).orElse(Buffer.buffer()));
         return null;
     }
 
@@ -121,8 +130,9 @@ public class Commander extends AbstractApplicationClient {
         workerExecutor.executeBlocking(userInputFuture -> {
             System.out.println();
             System.out.println();
-            System.out.printf(">>>>>>>>> Enter name of command for device [%s:%s] (prefix with 'ow:' to send one-way command):",
-                    tenantId, deviceId);
+            System.out.printf(
+                    ">>>>>>>>> Enter name of command for device [%s] in tenant [%s] (prefix with 'ow:' to send one-way command):",
+                    deviceId, tenantId);
             System.out.println();
             final String honoCmd = scanner.nextLine();
             System.out.println(">>>>>>>>> Enter command payload:");
@@ -138,7 +148,7 @@ public class Commander extends AbstractApplicationClient {
     private void close(final Throwable t) {
         workerExecutor.close();
         vertx.close();
-        LOG.error("Error: {}", t.getMessage());
+        log.error("Error: {}", t.getMessage());
     }
 
     /**

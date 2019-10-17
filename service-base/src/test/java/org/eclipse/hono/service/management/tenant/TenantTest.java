@@ -13,43 +13,67 @@
 
 package org.eclipse.hono.service.management.tenant;
 
-import static org.eclipse.hono.util.TenantConstants.FIELD_ADAPTERS;
-import static org.eclipse.hono.util.TenantConstants.FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED;
-import static org.eclipse.hono.util.TenantConstants.FIELD_ADAPTERS_TYPE;
-import static org.eclipse.hono.util.TenantConstants.FIELD_ENABLED;
-import static org.eclipse.hono.util.TenantConstants.FIELD_TRACING;
-import static org.eclipse.hono.util.TenantConstants.FIELD_TRACING_SAMPLING_MODE;
-import static org.eclipse.hono.util.TenantConstants.FIELD_TRACING_SAMPLING_MODE_PER_AUTH_ID;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
+import static org.hamcrest.Matchers.emptyIterable;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.nio.charset.StandardCharsets;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.security.GeneralSecurityException;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.RegistryManagementConstants;
+import org.eclipse.hono.util.ResourceLimits;
+import org.eclipse.hono.util.TenantConstants;
 import org.eclipse.hono.util.TenantTracingConfig;
 import org.eclipse.hono.util.TracingSamplingMode;
-import org.hamcrest.collection.IsEmptyIterable;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.SelfSignedCertificate;
 
 /**
- * Verifies {@link Tenant}.
+ * Verifies behavior of {@link Tenant}.
  */
-class TenantTest {
+public class TenantTest {
+
+    private static X509Certificate certificate;
 
     /**
-     * Decode Tenant with absent "enabled" flag.
+     * Sets up class fixture.
+     * @throws GeneralSecurityException if the self signed certificate cannot be created.
+     * @throws IOException if the self signed certificate cannot be read.
+     */
+    @BeforeAll
+    public static void setUp() throws GeneralSecurityException, IOException {
+        final SelfSignedCertificate selfSignedCert = SelfSignedCertificate.create("eclipse.org");
+        final CertificateFactory factory = CertificateFactory.getInstance("X.509");
+        certificate = (X509Certificate) factory.generateCertificate(new FileInputStream(selfSignedCert.certificatePath()));
+    }
+
+    /**
+     * Decode empty Tenant without any properties set.
      */
     @Test
     public void testDecodeDefault() {
-        final var tenant = Json.decodeValue("{}", Tenant.class);
+
+        final var tenant = new JsonObject().mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertNull(tenant.getEnabled());
+        assertNull(tenant.isEnabled());
     }
 
 
@@ -58,9 +82,9 @@ class TenantTest {
      */
     @Test
     public void testDecodeDisabled() {
-        final var tenant = Json.decodeValue("{\"enabled\": false}", Tenant.class);
+        final var tenant = new JsonObject().put(RegistryManagementConstants.FIELD_ENABLED, false).mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertFalse(tenant.getEnabled());
+        assertFalse(tenant.isEnabled());
     }
 
     /**
@@ -68,9 +92,9 @@ class TenantTest {
      */
     @Test
     public void testDecodeEnabled() {
-        final var tenant = Json.decodeValue("{\"enabled\": true}", Tenant.class);
+        final var tenant = new JsonObject().put(RegistryManagementConstants.FIELD_ENABLED, true).mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertTrue(tenant.getEnabled());
+        assertTrue(tenant.isEnabled());
     }
 
     /**
@@ -78,9 +102,11 @@ class TenantTest {
      */
     @Test
     public void testDecodeExt() {
-        final var tenant = Json.decodeValue("{\"ext\": {\"foo\": \"bar\"}}", Tenant.class);
+        final var tenant = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_EXT, new JsonObject().put("foo", "bar"))
+                .mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertNull(tenant.getEnabled());
+        assertNull(tenant.isEnabled());
 
         final var ext = tenant.getExtensions();
         assertNotNull(ext);
@@ -94,13 +120,15 @@ class TenantTest {
     public void testDecodeAdapters() {
         final JsonArray adapterJson = new JsonArray().add(
                     new JsonObject()
-                            .put("type", "http")
-                            .put("enabled", false)
-                            .put("device-authentication-required", true));
+                            .put(RegistryManagementConstants.FIELD_ADAPTERS_TYPE, "http")
+                            .put(RegistryManagementConstants.FIELD_ENABLED, false)
+                            .put(RegistryManagementConstants.FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED, true));
 
-        final var tenant = Json.decodeValue( new JsonObject().put("adapters", adapterJson).toString(), Tenant.class);
+        final var tenant = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_ADAPTERS, adapterJson)
+                .mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertNull(tenant.getEnabled());
+        assertNull(tenant.isEnabled());
 
         final var adapters = tenant.getAdapters();
         assertNotNull(adapters);
@@ -108,11 +136,59 @@ class TenantTest {
     }
 
     /**
+     * Verifies that decoding of a tenant object with empty adapters list fails.
+     */
+    @Test
+    public void testDecodeEmptyAdaptersListFails() {
+        final JsonObject tenantJson = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_ADAPTERS, new JsonArray());
+        assertThrows(IllegalArgumentException.class, () -> {
+            tenantJson.mapTo(Tenant.class);
+        });
+    }
+
+    /**
+     * Verifies that decoding of a tenant object having more than one adapter of the same type fails.
+     */
+    @Test
+    public void testWithMultipleAdapterEntriesOfSameType() {
+        final JsonObject httpAdapterConfig = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_ADAPTERS_TYPE, "http")
+                .put(RegistryManagementConstants.FIELD_ENABLED, false)
+                .put(RegistryManagementConstants.FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED, true);
+        final JsonArray adaptersConfig = new JsonArray()
+                .add(httpAdapterConfig)
+                .add(httpAdapterConfig);
+        final var tenant = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_ADAPTERS, adaptersConfig);
+
+        assertThrows(IllegalArgumentException.class, () -> tenant.mapTo(Tenant.class));
+    }
+
+    /**
+     * Verifies that adding an adapter fails, if the adapter's type is same as that of any
+     * already existing adapters.
+     */
+    @Test
+    public void testAddAdapterOfAlreadyExistingType() {
+        final Tenant tenant = new Tenant();
+        tenant.setEnabled(true);
+        tenant.addAdapterConfig(new Adapter(Constants.PROTOCOL_ADAPTER_TYPE_HTTP)
+                .setEnabled(false)
+                .setDeviceAuthenticationRequired(true));
+        assertThrows(IllegalArgumentException.class, () -> tenant
+                .addAdapterConfig(new Adapter(Constants.PROTOCOL_ADAPTER_TYPE_HTTP)
+                        .setEnabled(false)
+                        .setDeviceAuthenticationRequired(true)));
+    }
+
+    /**
      * Decode tenant with "minimum-message-size=4096".
      */
     @Test
     public void testDecodeMinimumMessageSize() {
-        final var tenant = Json.decodeValue("{\"minimum-message-size\": 4096}", Tenant.class);
+        final JsonObject json = new JsonObject().put(RegistryManagementConstants.FIELD_MINIMUM_MESSAGE_SIZE, 4096);
+        final var tenant = json.mapTo(Tenant.class);
         assertNotNull(tenant);
         assertEquals(4096, tenant.getMinimumMessageSize());
     }
@@ -122,7 +198,7 @@ class TenantTest {
      */
     @Test
     public void testDecodeWithoutMinimumMessageSize() {
-        final var tenant = Json.decodeValue("{}", Tenant.class);
+        final var tenant = new JsonObject().mapTo(Tenant.class);
         assertNotNull(tenant);
         assertEquals(RegistryManagementConstants.DEFAULT_MINIMUM_MESSAGE_SIZE, tenant.getMinimumMessageSize());
     }
@@ -135,38 +211,61 @@ class TenantTest {
 
         final JsonObject tenantSpec = new JsonObject()
                 .put(RegistryManagementConstants.FIELD_RESOURCE_LIMITS, new JsonObject()
-                        .put(RegistryManagementConstants.FIELD_RESOURCE_LIMITS_MAX_CONNECTIONS, 100));
+                        .put(TenantConstants.FIELD_MAX_CONNECTIONS, 100)
+                        .put(TenantConstants.FIELD_MAX_TTL, 30)
+                        .put(TenantConstants.FIELD_DATA_VOLUME, new JsonObject()
+                                .put(TenantConstants.FIELD_MAX_BYTES, 20_000_000)
+                                .put(TenantConstants.FIELD_EFFECTIVE_SINCE, "2019-04-25T14:30:00+02:00")
+                                .put(TenantConstants.FIELD_PERIOD, new JsonObject()
+                                        .put(TenantConstants.FIELD_PERIOD_MODE, "days")
+                                        .put(TenantConstants.FIELD_PERIOD_NO_OF_DAYS, 90))));
 
         final Tenant tenant = tenantSpec.mapTo(Tenant.class);
         assertNotNull(tenant);
-        assertNull(tenant.getEnabled());
+        assertNull(tenant.isEnabled());
 
-        final var limits = tenant.getResourceLimits();
+        final ResourceLimits limits = tenant.getResourceLimits();
         assertNotNull(limits);
         assertEquals(100, limits.getMaxConnections());
+        assertEquals(30, limits.getMaxTtl());
+        assertNotNull(limits.getDataVolume());
+        assertEquals(
+                DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse("2019-04-25T14:30:00+02:00", OffsetDateTime::from).toInstant(),
+                limits.getDataVolume().getEffectiveSince());
+        assertEquals(20_000_000, limits.getDataVolume().getMaxBytes());
+        assertNotNull(limits.getDataVolume().getPeriod());
+        assertEquals("days", limits.getDataVolume().getPeriod().getMode());
+        assertEquals(90, limits.getDataVolume().getPeriod().getNoOfDays());
     }
 
     /**
-     * Decode "trusted-ca" section.
+     * Encode "resource-limits" section.
      */
     @Test
-    public void testDecodeTrustedCA() {
+    public void testEncodeResourceLimitsDoesNotIncludeDefaultValues() {
+
+        final ResourceLimits limits = new ResourceLimits();
+        final JsonObject json = JsonObject.mapFrom(limits);
+        assertFalse(json.containsKey(TenantConstants.FIELD_MAX_CONNECTIONS));
+        final ResourceLimits deserializedLimits = json.mapTo(ResourceLimits.class);
+        assertThat(deserializedLimits.getMaxConnections(), is(-1));
+    }
+
+    /**
+     * Decode "trusted-ca" section for an X.509 certificate.
+     * 
+     * @throws CertificateException if the self signed certificate cannot be encoded.
+     */
+    @Test
+    public void testDecodeTrustedCAUsingCert() throws CertificateException {
+
         final JsonObject ca = new JsonObject()
-                .put("subject-dn", "org.eclipse")
-                .put("public-key", "abc123".getBytes(StandardCharsets.UTF_8))
-                .put("algorithm", "def456")
-                .put("cert", "xyz789".getBytes(StandardCharsets.UTF_8));
+                .put(RegistryManagementConstants.FIELD_PAYLOAD_CERT, certificate.getEncoded());
+        final JsonObject tenantJson = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_PAYLOAD_TRUSTED_CA, new JsonArray().add(ca));
 
-        final var tenant = Json.decodeValue( new JsonObject().put("trusted-ca", ca).toString(), Tenant.class);
-        assertNotNull(tenant);
-        assertNull(tenant.getEnabled());
-
-        final var storedCa = tenant.getTrustedCertificateAuthority();
-        assertNotNull(storedCa);
-        assertEquals("org.eclipse", storedCa.getSubjectDn());
-        assertArrayEquals("abc123".getBytes(StandardCharsets.UTF_8), storedCa.getPublicKey());
-        assertArrayEquals("xyz789".getBytes(StandardCharsets.UTF_8), storedCa.getCertificate());
-        assertEquals("def456", storedCa.getKeyAlgorithm());
+        final Tenant tenant = tenantJson.mapTo(Tenant.class);
+        assertTrue(tenant.isValid());
     }
 
     /**
@@ -174,15 +273,18 @@ class TenantTest {
      */
     @Test
     public void testDecodeTraceSampling() {
+
+
+        final JsonObject tracingConfigJson = new JsonObject()
+                .put(RegistryManagementConstants.FIELD_TRACING_SAMPLING_MODE, TracingSamplingMode.ALL.getFieldValue())
+                .put(RegistryManagementConstants.FIELD_TRACING_SAMPLING_MODE_PER_AUTH_ID, new JsonObject()
+                        .put("authId1", TracingSamplingMode.ALL.getFieldValue())
+                        .put("authId2", TracingSamplingMode.DEFAULT.getFieldValue()));
+
         final JsonObject tenantJson = new JsonObject();
-        final JsonObject tracingConfigJson = new JsonObject();
-        tracingConfigJson.put("sampling-mode", "all");
-        final JsonObject samplingModePerAuthIdMap = new JsonObject()
-                .put("authId1", "all")
-                .put("authId2", "default");
-        tracingConfigJson.put("sampling-mode-per-auth-id", samplingModePerAuthIdMap);
-        tenantJson.put("tracing", tracingConfigJson);
-        final var tenant = Json.decodeValue(tenantJson.toString(), Tenant.class);
+        tenantJson.put(RegistryManagementConstants.FIELD_TRACING, tracingConfigJson);
+
+        final var tenant = tenantJson.mapTo(Tenant.class);
         assertNotNull(tenant);
         final TenantTracingConfig tracingConfig = tenant.getTracing();
         assertNotNull(tracingConfig);
@@ -197,10 +299,7 @@ class TenantTest {
     @Test
     public void testEncodeDefault() {
         final var json = JsonObject.mapFrom(new Tenant());
-        assertNotNull(json);
-        assertNull(json.getBoolean("enabled"));
-        assertNull(json.getJsonObject("ext"));
-        assertThat(json, IsEmptyIterable.emptyIterable());
+        assertThat(json, is(emptyIterable()));
     }
 
     /**
@@ -212,8 +311,8 @@ class TenantTest {
         tenant.setEnabled(true);
         final var json = JsonObject.mapFrom(tenant);
         assertNotNull(json);
-        assertTrue(json.getBoolean("enabled"));
-        assertNull(json.getJsonObject("ext"));
+        assertTrue(json.getBoolean(RegistryManagementConstants.FIELD_ENABLED));
+        assertNull(json.getJsonObject(RegistryManagementConstants.FIELD_EXT));
     }
 
     /**
@@ -225,8 +324,8 @@ class TenantTest {
         tenant.setEnabled(false);
         final var json = JsonObject.mapFrom(tenant);
         assertNotNull(json);
-        assertFalse(json.getBoolean("enabled"));
-        assertNull(json.getJsonObject("ext"));
+        assertFalse(json.getBoolean(RegistryManagementConstants.FIELD_ENABLED));
+        assertNull(json.getJsonObject(RegistryManagementConstants.FIELD_EXT));
     }
 
     /**
@@ -238,7 +337,7 @@ class TenantTest {
         tenant.setMinimumMessageSize(4096);
         final var json = JsonObject.mapFrom(tenant);
         assertNotNull(json);
-        assertEquals(4096, json.getInteger("minimum-message-size"));
+        assertEquals(4096, json.getInteger(RegistryManagementConstants.FIELD_MINIMUM_MESSAGE_SIZE));
     }
 
     /**
@@ -254,10 +353,10 @@ class TenantTest {
         tenant.setTracing(tracingConfig);
         final var json = JsonObject.mapFrom(tenant);
         assertNotNull(json);
-        final JsonObject tracingConfigJson = json.getJsonObject(FIELD_TRACING);
+        final JsonObject tracingConfigJson = json.getJsonObject(TenantConstants.FIELD_TRACING);
         assertNotNull(tracingConfigJson);
-        assertEquals(TracingSamplingMode.ALL.getFieldValue(), tracingConfigJson.getString(FIELD_TRACING_SAMPLING_MODE));
-        final JsonObject traceSamplingModePerAuthIdJson = tracingConfigJson.getJsonObject(FIELD_TRACING_SAMPLING_MODE_PER_AUTH_ID);
+        assertEquals(TracingSamplingMode.ALL.getFieldValue(), tracingConfigJson.getString(TenantConstants.FIELD_TRACING_SAMPLING_MODE));
+        final JsonObject traceSamplingModePerAuthIdJson = tracingConfigJson.getJsonObject(TenantConstants.FIELD_TRACING_SAMPLING_MODE_PER_AUTH_ID);
         assertNotNull(traceSamplingModePerAuthIdJson);
         assertEquals(TracingSamplingMode.ALL.getFieldValue(), traceSamplingModePerAuthIdJson.getString("authId1"));
         assertEquals(TracingSamplingMode.DEFAULT.getFieldValue(), traceSamplingModePerAuthIdJson.getString("authId2"));
@@ -279,11 +378,11 @@ class TenantTest {
                     .setEnabled(true)
                     .setDeviceAuthenticationRequired(true));
 
-        final JsonArray result = JsonObject.mapFrom(tenant).getJsonArray(FIELD_ADAPTERS);
+        final JsonArray result = JsonObject.mapFrom(tenant).getJsonArray(TenantConstants.FIELD_ADAPTERS);
         assertNotNull(result);
-        assertEquals(Constants.PROTOCOL_ADAPTER_TYPE_HTTP, result.getJsonObject(0).getString(FIELD_ADAPTERS_TYPE));
-        assertEquals(Constants.PROTOCOL_ADAPTER_TYPE_MQTT, result.getJsonObject(1).getString(FIELD_ADAPTERS_TYPE));
-        assertEquals(false, result.getJsonObject(0).getBoolean(FIELD_ENABLED));
-        assertEquals(true, result.getJsonObject(0).getBoolean(FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED));
+        assertEquals(Constants.PROTOCOL_ADAPTER_TYPE_HTTP, result.getJsonObject(0).getString(TenantConstants.FIELD_ADAPTERS_TYPE));
+        assertEquals(Constants.PROTOCOL_ADAPTER_TYPE_MQTT, result.getJsonObject(1).getString(TenantConstants.FIELD_ADAPTERS_TYPE));
+        assertEquals(false, result.getJsonObject(0).getBoolean(TenantConstants.FIELD_ENABLED));
+        assertEquals(true, result.getJsonObject(0).getBoolean(TenantConstants.FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED));
     }
 }

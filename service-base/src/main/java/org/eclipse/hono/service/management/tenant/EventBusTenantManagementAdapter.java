@@ -13,16 +13,7 @@
 
 package org.eclipse.hono.service.management.tenant;
 
-import static org.eclipse.hono.service.management.Util.newChildSpan;
-
-import java.io.ByteArrayInputStream;
 import java.net.HttpURLConnection;
-import java.security.GeneralSecurityException;
-import java.security.KeyFactory;
-import java.security.cert.CertificateException;
-import java.security.cert.CertificateFactory;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -31,6 +22,7 @@ import org.eclipse.hono.service.EventBusService;
 import org.eclipse.hono.service.management.Id;
 import org.eclipse.hono.service.management.OperationResult;
 import org.eclipse.hono.service.management.Result;
+import org.eclipse.hono.service.management.Util;
 import org.eclipse.hono.util.EventBusMessage;
 import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.RegistryManagementConstants;
@@ -47,10 +39,8 @@ import io.vertx.core.json.JsonObject;
  * In particular, this base class provides support for receiving service invocation request messages
  * via vert.x' event bus and route them to specific methods corresponding to the operation indicated
  * in the message.
- *
- * @param <T> The type of configuration properties this service requires.
  */
-public abstract class EventBusTenantManagementAdapter<T> extends EventBusService {
+public abstract class EventBusTenantManagementAdapter extends EventBusService {
 
     private static final String SPAN_NAME_GET_TENANT = "get Tenant from management API";
     private static final String SPAN_NAME_CREATE_TENANT = "create Tenant from management API";
@@ -109,7 +99,7 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
         if (isValidRequestPayload(payload)) {
             log.debug("creating tenant [{}]", tenantId.orElse("<auto>"));
 
-            final Span span = newChildSpan(SPAN_NAME_CREATE_TENANT, spanContext, tracer, tenantId.orElse("<auto>"), getClass().getSimpleName());
+            final Span span = Util.newChildSpan(SPAN_NAME_CREATE_TENANT, spanContext, tracer, tenantId.orElse("<auto>"), getClass().getSimpleName());
             final Future<OperationResult<Id>> addResult = Future.future();
 
             addNotPresentFieldsWithDefaultValuesForTenant(payload);
@@ -139,7 +129,7 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
             log.debug("updating tenant [{}]", tenantId);
 
             final Future<OperationResult<Void>> updateResult = Future.future();
-            final Span span = newChildSpan(SPAN_NAME_UPDATE_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
+            final Span span = Util.newChildSpan(SPAN_NAME_UPDATE_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
 
             addNotPresentFieldsWithDefaultValuesForTenant(payload);
             getService().update(tenantId, payload, resourceVersion, span, updateResult);
@@ -166,7 +156,7 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
         } else {
             log.debug("deleting tenant [{}]", tenantId);
             final Future<Result<Void>> removeResult = Future.future();
-            final Span span = newChildSpan(SPAN_NAME_REMOVE_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
+            final Span span = Util.newChildSpan(SPAN_NAME_REMOVE_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
 
             getService().remove(tenantId, resourceVersion, span, removeResult);
             return removeResult.map(res -> {
@@ -176,7 +166,7 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
         }
     }
 
-    Future<EventBusMessage> processGetRequest(final EventBusMessage request) {
+    private Future<EventBusMessage> processGetRequest(final EventBusMessage request) {
 
         final String tenantId = request.getTenant();
         final SpanContext spanContext = request.getSpanContext();
@@ -188,7 +178,7 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
 
             log.debug("retrieving tenant [id: {}]", tenantId);
             final Future<OperationResult<Tenant>> getResult = Future.future();
-            final Span span = newChildSpan(SPAN_NAME_GET_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
+            final Span span = Util.newChildSpan(SPAN_NAME_GET_TENANT, spanContext, tracer, tenantId, getClass().getSimpleName());
 
             getService().read(tenantId, span, getResult);
             return getResult.map(res -> {
@@ -204,116 +194,14 @@ public abstract class EventBusTenantManagementAdapter<T> extends EventBusService
      * @return boolean The result of the check : {@link Boolean#TRUE} if the payload is valid, {@link Boolean#FALSE} otherwise.
      * @throws NullPointerException If the payload is {@code null}.
      */
-    private boolean isValidRequestPayload(final JsonObject payload) {
+    boolean isValidRequestPayload(final JsonObject payload) {
 
-        return hasValidAdapterSpec(payload) && hasValidTrustedCaSpec(payload);
-    }
+        Objects.requireNonNull(payload);
 
-    /**
-     * Checks if a payload contains a valid protocol adapter specification.
-     *
-     * @param payload The payload to check.
-     * @return boolean {@code true} if the payload is valid.
-     */
-    private boolean hasValidAdapterSpec(final JsonObject payload) {
-
-        final Object adaptersObj = payload.getValue(RegistryManagementConstants.FIELD_ADAPTERS);
-        if (adaptersObj instanceof JsonArray) {
-
-            final JsonArray adapters = (JsonArray) adaptersObj;
-            if (adapters.size() == 0) {
-                // if given, adapters config array must not be empty
-                return false;
-            } else {
-                final boolean containsInvalidAdapter = adapters.stream()
-                        .anyMatch(obj -> !(obj instanceof JsonObject) ||
-                                !((JsonObject) obj).containsKey(RegistryManagementConstants.FIELD_ADAPTERS_TYPE));
-                if (containsInvalidAdapter) {
-                    return false;
-                }
-            }
-        } else if (adaptersObj != null) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Ensure that the <em>public-key</em> or <em>cert</em> property of the JSON object contains a valid Base64 DER encoded value.
-     * This method also validates that the trusted CA config also contains the mandatory <em>subject-dn</em>
-     * property.
-     *
-     * @param trustedCa The JSON object containing either the <em>public-key</em> or the <em>cert</em> property.
-     * @return true if the trusted CA object is valid (i.e it can be parsed into either an X.509 certificate or the
-     *         public key can be generated) or false otherwise.
-     */
-    private boolean isValidTrustedCaSpec(final JsonObject trustedCa) {
-
-        final Object encodedCert = trustedCa.getValue(RegistryManagementConstants.FIELD_PAYLOAD_CERT);
-        final Object encodedKey = trustedCa.getValue(RegistryManagementConstants.FIELD_PAYLOAD_PUBLIC_KEY);
-        final Object subjectDn = trustedCa.getValue(RegistryManagementConstants.FIELD_PAYLOAD_SUBJECT_DN);
-
-        if (!String.class.isInstance(subjectDn)) {
-            return false;
-        }
-        if (encodedCert != null && encodedKey == null) {
-            // validate the certificate
-            return isEncodedCertificate(encodedCert);
-        } else if (encodedKey != null && encodedCert == null) {
-            // validate public-key
-            final String algorithmName = Optional
-                    .ofNullable((String) trustedCa.getValue(RegistryManagementConstants.FIELD_PAYLOAD_KEY_ALGORITHM)).orElse("RSA");
-            return isEncodedPublicKey(encodedKey, algorithmName);
-        } else {
-            // Either the trusted CA configuration:
-            // contains both a cert and a public-key property
-            // or they are both missing
-            return false;
-        }
-    }
-
-    private boolean isEncodedCertificate(final Object encodedCert) {
-        if (String.class.isInstance(encodedCert)) {
-            try {
-                CertificateFactory.getInstance("X.509").generateCertificate(
-                        new ByteArrayInputStream(Base64.getDecoder().decode((String) encodedCert)));
-                return true;
-            } catch (final CertificateException | IllegalArgumentException e) {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    private boolean isEncodedPublicKey(final Object encodedKey, final String algorithmName) {
-        if (String.class.isInstance(encodedKey)) {
-            try {
-                KeyFactory.getInstance(algorithmName)
-                        .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode((String) encodedKey)));
-                return true;
-            } catch (final GeneralSecurityException | IllegalArgumentException e) {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    /**
-     * Checks if a payload contains a valid trusted CA specification.
-     *
-     * @param payload The payload to check.
-     * @return boolean {@code true} if the payload is valid.
-     */
-    private boolean hasValidTrustedCaSpec(final JsonObject payload) {
-
-        final Object trustConfig = payload.getValue(RegistryManagementConstants.FIELD_PAYLOAD_TRUSTED_CA);
-        if (trustConfig == null) {
-            return true;
-        } else if (JsonObject.class.isInstance(trustConfig)) {
-            return isValidTrustedCaSpec((JsonObject) trustConfig);
-        } else {
+        try {
+            return payload.mapTo(Tenant.class).isValid();
+        } catch (final IllegalArgumentException e) {
+            log.debug("Error parsing payload of tenant request", e);
             return false;
         }
     }

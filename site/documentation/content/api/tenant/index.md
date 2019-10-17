@@ -114,7 +114,7 @@ The table below provides an overview of the standard members defined for the JSO
 | *resource-limits*        | *no*      | *object*      | Any resource limits that should be enforced for the tenant, e.g. the maximum number of concurrent connections and the maximum data volume for a given period. Refer to [Resource Limits Configuration Format]({{< relref "#resource-limits-configuration-format" >}}) for details. |
 | *tenant-id*              | *yes*     | *string*      | The ID of the tenant. |
 | *tracing*                | *no*      | *object*      | A set of options regarding the tracing of messages for the tenant. See [Tracing Format]({{< relref "#tracing-format" >}}) for a definition of the content model of the object. |
-| *trusted-ca*             | *no*      | *object*      | The trusted certificate authority to use for validating certificates presented by devices of the tenant for authentication purposes. See [Trusted Certificate Authority Format]({{< relref "#trusted-ca-format" >}}) for a definition of the content model of the object. |
+| *trusted-ca*             | *no*      | *array*       | The list of trusted certificate authorities to use for validating certificates presented by devices of the tenant for authentication purposes. See [Trusted Certificate Authority Format]({{< relref "#trusted-ca-format" >}}) for a definition of the content model of the objects contained in the array. **NB** If the element is provided then the list MUST NOT be empty. |
 
 The JSON object MAY contain an arbitrary number of additional members with arbitrary names which can be of a scalar or a complex type.
 This allows for future *well-known* additions and also allows to add further information which might be relevant to a *custom* adapter only.
@@ -125,29 +125,32 @@ The JSON structure below contains example information for tenant `TEST_TENANT`. 
 
 ~~~json
 {
-  "tenant-id" : "TEST_TENANT",
+  "tenant-id": "TEST_TENANT",
   "defaults": {
     "ttl": 30
   },
-  "enabled" : true,
+  "enabled": true,
   "customer": "ACME Inc.",
   "resource-limits": {
     "max-connections": 100000,
     "data-volume": {
       "max-bytes": 2147483648,
-      "period-in-days": 30,
-      "effective-since": "2019-04-27"
+      "period": {
+        "mode": "days",
+        "no-of-days": 30
+      },
+      "effective-since": "2019-07-27T14:30:00Z"
     }
   },
-  "adapters" : [
+  "adapters": [
     {
-      "type" : "hono-mqtt",
-      "enabled" : true,
-      "device-authentication-required" : true
+      "type": "hono-mqtt",
+      "enabled": true,
+      "device-authentication-required": true
     }, {
-      "type" : "hono-http",
-      "enabled" : true,
-      "device-authentication-required" : true,
+      "type": "hono-http",
+      "enabled": true,
+      "device-authentication-required": true,
       "deployment": {
         "maxInstances": 4
       }
@@ -167,17 +170,39 @@ The table below provides an overview of the members defined for the *tracing* JS
 
 ### Trusted CA Format
 
-The table below provides an overview of the members defined for the *trusted-ca* JSON object:
+The table below provides an overview of the members of a JSON object representing a trusted CA:
 
 | Name                     | Mandatory  | Type          | Default Value | Description |
 | :------------------------| :--------: | :------------ | :------------ | :---------- |
-| *subject-dn*             | *yes*      | *string*      |               | The subject DN of the trusted root certificate in the format defined by [RFC 2253](https://www.ietf.org/rfc/rfc2253.txt). |
-| *cert*                   | *no*       | *string*      |               | The Base64 encoded binary DER encoding of the trusted root X.509 certificate. |
-| *public-key*             | *no*       | *string*      |               | The Base64 encoded binary DER encoding of the trusted root certificate's public key. |
-| *algorithm*              | *no*       | *string*      | `RSA`        | The name of the public key algorithm. Supported values are `RSA` and `EC`. This property is ignored if the *cert* property is used to store a certificate. |
+| *subject-dn*             | *yes*      | *string*      | `-`           | The subject DN of the trusted root certificate in the format defined by [RFC 2253](https://www.ietf.org/rfc/rfc2253.txt). |
+| *public-key*             | *yes*      | *string*      | `-`           | The Base64 encoded binary DER encoding of the trusted root certificate's public key. |
+| *algorithm*              | *no*       | *string*      | `RSA`         | The name of the public key algorithm. Supported values are `RSA` and `EC`. |
 
-* The *subject-dn* MUST be unique among all registered tenants.
-* Either the *cert* or the *public-key* MUST be set.
+**NB** CAs of the *same* tenant MAY share the same subject DN, e.g. allowing for the definition of overlapping validity periods.
+However, CAs of *different* tenants MUST NOT share the same subject DN in order to allow for the unique look up of a tenant by
+the subject DN of one of its trusted CAs.
+
+**Examples**
+
+Below is an example payload for a response to a *get* request for tenant `TEST_TENANT`.
+The tenant is configured with two trusted certificate authorities, each using a different public key algorithm.
+
+~~~json
+{
+  "tenant-id" : "TEST_TENANT",
+  "enabled" : true,
+  "trusted-ca": [{
+    "subject-dn": "CN=ca,OU=Hono,O=Eclipse",
+    "public-key": "PublicKey==",
+    "algorithm":  "RSA"
+  }, {
+    "subject-dn": "CN=ca,OU=Hono,O=ACME Inc.",
+    "public-key": "ECKey==",
+    "algorithm":  "EC"
+  }]
+}
+~~~
+
 
 ### Adapter Configuration Format
 
@@ -198,12 +223,24 @@ This allows for future *well-known* additions and also allows to add further inf
 
 The table below contains the properties which are used to configure a tenant's resource limits:
 
-| Name                     | Mandatory | JSON Type     | Default Value | Description |
-| :------------------------| :-------: | :------------ | :------------ | :---------- |
-| *max-connections*        | *no*      | *number*      | `-1`          | The maximum number of concurrent connections allowed from devices of this tenant. The default value `-1` indicates that no limit is set. |
-| *data-volume*            | *no*      | *object*      | `-`           | The maximum data volume allowed for the given tenant. Refer to  [Data Volume Configuration Format]({{< relref "#data-volume-configuration-format" >}}) for details.|
+| Name                | Mandatory | JSON Type     | Default Value | Description |
+| :------------------ | :-------: | :------------ | :------------ | :---------- |
+| *max-connections*   | *no*      | *number*      | `-1`          | The maximum number of concurrent connections allowed from devices of this tenant. The default value `-1` indicates that no limit is set. |
+| *max-ttl*           | *no*      | *number*      | `-1`          | The maximum time-to-live (in seconds) to use for events published by devices of this tenant. Any default TTL value specified at either the tenant or device level will be limited to the max value specified here. If this property is set to a value greater than `-1` and no default TTL is specified for a device, the max value will be used for events published by the device. A value of `-1` (the default) indicates that no limit is set. **Note** that this property contains the TTL in *seconds* whereas the AMQP 1.0 specification defines a message's *ttl* header to use milliseconds. |
+| *data-volume*       | *no*      | *object*      | `-`           | The maximum data volume allowed for the given tenant. Refer to  [Data Volume Configuration Format]({{< relref "#data-volume-configuration-format" >}}) for details.|
 
 Protocol adapters SHOULD use the *max-connections* property to determine if a device's connection request should be accepted or rejected.
+
+Protocol adapters SHOULD use the *max-ttl* property to determine the *effective time-to-live* for events published by devices as follows:
+
+1. If a non-default *max-ttl* is set for the tenant, use that value as the *effective ttl*, otherwise set *effective ttl* to `-1`.
+1. If the event published by the device
+   1. contains a *ttl* header and *effective ttl* is not `-1` and the *ttl* value (in seconds) provided by the device is smaller than the
+      *effective ttl*, use the device provided *ttl* value as the new *effective ttl*.
+   1. does not contain a *ttl* header but a default *ttl* value is configured for the device (with the device level taking precedence
+      over the tenant level) and *effective ttl* is not `-1` and the default value is smaller than the *effective ttl*,
+      use the default *ttl* value as the new *effective ttl*.
+1. If *effective ttl* is not `-1`, set the downstream event message's *ttl* header to its value (in milliseconds).
 
 The JSON object MAY contain an arbitrary number of additional members with arbitrary names of either scalar or complex type.
 This allows for future *well-known* additions and also allows to add further information which might be relevant to a *custom* adapter only.
@@ -214,11 +251,20 @@ The table below contains the properties which are used to configure a tenant's d
 
 | Name                     | Mandatory | JSON Type     | Default Value | Description |
 | :------------------------| :-------: | :------------ | :------------ | :---------- |
+| *effective-since*        | *yes*     | *string*      | `-`           | The point in time at which the current settings became effective, i.e. the start of the first accounting period based on these settings. The value MUST be an [ISO 8601 compliant *combined date and time representation in extended format*](https://en.wikipedia.org/wiki/ISO_8601#Combined_date_and_time_representations).|
 | *max-bytes*              | *no*      | *number*      | `-1`          | The maximum number of bytes allowed for the tenant for each accounting period. MUST be an integer. A negative value indicates that no limit is set. |
-| *period-in-days*         | *no*      | *number*      | `30`          | The length of an accounting period, i.e. the number of days over which the data usage is to be limited. MUST be a positive integer. |
-| *effective-since*        | *yes*     | *string*      | `-`           | The point in time at which the current settings became effective, i.e. the start of the first accounting period based on these settings. The value MUST be an [ISO 8601 compliant *combined date and time representation in extended format*](https://en.wikipedia.org/wiki/ISO_8601#Combined_date_and_time_representations).
+| *period*                 | *no*      | *object*      | `-`          | The mode and length of an accounting period, i.e. the data usage can limited based on the defined number of days or on a monthly basis. |
 
 Protocol adapters SHOULD use this information to determine if a message originating from or destined to a device should be accepted for processing.
+
+### Data Volume Period Configuration Format
+
+The table below contains the properties which are used to configure a tenant's data volume period:
+
+| Name                     | Mandatory | JSON Type     | Default Value | Description |
+| :------------------------| :-------: | :------------ | :------------ | :---------- |
+| *mode*                   | *yes*     | *string*      | `-`           | The mode of the data usage calculation. The default implementation supports two modes namely `days` and `monthly`.|
+| *no-of-days*             | *no*      | *number*      | `-`           | When the mode is set as `days`, then this value represents the length of an accounting period , i.e. the number of days over which the data usage is to be limited. MUST be a positive integer.|
 
 ## Delivery States used by the Tenant API
 

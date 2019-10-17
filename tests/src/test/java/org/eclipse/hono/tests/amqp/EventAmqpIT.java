@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016, 2018 Contributors to the Eclipse Foundation
+ * Copyright (c) 2016, 2019 Contributors to the Eclipse Foundation
  *
  * See the NOTICE file(s) distributed with this work for additional
  * information regarding copyright ownership.
@@ -12,33 +12,36 @@
  *******************************************************************************/
 package org.eclipse.hono.tests.amqp;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import org.apache.qpid.proton.message.Message;
 import org.eclipse.hono.client.MessageConsumer;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import io.vertx.core.Future;
-import io.vertx.ext.unit.TestContext;
-import io.vertx.ext.unit.junit.VertxUnitRunner;
+import io.vertx.junit5.VertxExtension;
+import io.vertx.junit5.VertxTestContext;
 import io.vertx.proton.ProtonQoS;
 
 /**
  * An Event based integration test for the AMQP adapter.
  */
-@RunWith(VertxUnitRunner.class)
+@ExtendWith(VertxExtension.class)
 public class EventAmqpIT extends AmqpUploadTestBase {
 
     private static final String EVENT_ENDPOINT = "event";
 
-    @Override
-    protected Future<MessageConsumer> createConsumer(final String tenantId, final Consumer<Message> messageConsumer) {
-        return helper.applicationClientFactory.createEventConsumer(tenantId, messageConsumer, close -> {});
+    static Stream<ProtonQoS> senderQoSTypes() {
+        // events may only be published using AT LEAST ONCE delivery semantics
+        return Stream.of(ProtonQoS.AT_LEAST_ONCE);
     }
 
     @Override
-    protected ProtonQoS getProducerQoS() {
-        return ProtonQoS.AT_LEAST_ONCE;
+    protected Future<MessageConsumer> createConsumer(final String tenantId, final Consumer<Message> messageConsumer) {
+        return helper.applicationClientFactory.createEventConsumer(tenantId, messageConsumer, close -> {});
     }
 
     @Override
@@ -47,8 +50,8 @@ public class EventAmqpIT extends AmqpUploadTestBase {
     }
 
     @Override
-    protected void assertAdditionalMessageProperties(final TestContext ctx, final Message msg) {
+    protected void assertAdditionalMessageProperties(final VertxTestContext ctx, final Message msg) {
         // assert that events are marked as "durable"
-        ctx.assertTrue(msg.isDurable());
+        ctx.verify(() -> assertThat(msg.isDurable()).isTrue());
     }
 }

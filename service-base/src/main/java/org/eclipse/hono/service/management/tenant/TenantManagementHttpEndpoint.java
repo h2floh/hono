@@ -15,16 +15,19 @@ package org.eclipse.hono.service.management.tenant;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpHeaders;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
+
 import java.net.HttpURLConnection;
+import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
-import java.util.function.Predicate;
+import java.util.function.IntPredicate;
 import org.eclipse.hono.client.ClientErrorException;
 import org.eclipse.hono.config.ServiceConfigProperties;
 import org.eclipse.hono.service.http.AbstractHttpEndpoint;
@@ -68,6 +71,11 @@ public final class TenantManagementHttpEndpoint extends AbstractHttpEndpoint<Ser
     public void addRoutes(final Router router) {
 
         final String path = String.format("/%s", getName());
+        final String pathWithTenant = String.format("/%s/:%s", getName(), PARAM_TENANT_ID);
+
+        // Add CORS handler
+        router.route(path).handler(createCorsHandler(config.getCorsAllowedOrigin(), EnumSet.of(HttpMethod.POST)));
+        router.route(pathWithTenant).handler(createDefaultCorsHandler(config.getCorsAllowedOrigin()));
 
         final BodyHandler bodyHandler = BodyHandler.create();
         bodyHandler.setBodyLimit(config.getMaxPayloadSize());
@@ -76,8 +84,6 @@ public final class TenantManagementHttpEndpoint extends AbstractHttpEndpoint<Ser
         router.post(path).handler(bodyHandler);
         router.post(path).handler(this::extractOptionalJsonPayload);
         router.post(path).handler(this::createTenant);
-
-        final String pathWithTenant = String.format("/%s/:%s", getName(), PARAM_TENANT_ID);
 
         // ADD tenant
         router.post(pathWithTenant).handler(bodyHandler);
@@ -169,7 +175,7 @@ public final class TenantManagementHttpEndpoint extends AbstractHttpEndpoint<Ser
             final RoutingContext ctx,
             final String tenantId,
             final String action,
-            final Predicate<Integer> successfulOutcomeFilter,
+            final IntPredicate successfulOutcomeFilter,
             final BiConsumer<HttpServerResponse, EventBusMessage> httpServerResponseHandler) {
 
         logger.debug("http request [{}] for tenant [tenant: {}]", action, tenantId);

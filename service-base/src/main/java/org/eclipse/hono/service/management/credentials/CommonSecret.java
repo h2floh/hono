@@ -12,12 +12,11 @@
  *******************************************************************************/
 package org.eclipse.hono.service.management.credentials;
 
-import static org.eclipse.hono.util.RegistryManagementConstants.FIELD_SECRETS_NOT_AFTER;
-import static org.eclipse.hono.util.RegistryManagementConstants.FIELD_SECRETS_NOT_BEFORE;
-
 import java.time.Instant;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
+import org.eclipse.hono.annotation.HonoTimestamp;
+import org.eclipse.hono.util.RegistryManagementConstants;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.MoreObjects;
@@ -32,11 +31,11 @@ public abstract class CommonSecret {
     @JsonProperty
     private Boolean enabled;
 
-    @JsonProperty(FIELD_SECRETS_NOT_BEFORE)
-    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss[XXX]", timezone = "UTC")
+    @JsonProperty(RegistryManagementConstants.FIELD_SECRETS_NOT_BEFORE)
+    @HonoTimestamp
     private Instant notBefore;
-    @JsonProperty(FIELD_SECRETS_NOT_AFTER)
-    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss[XXX]", timezone = "UTC")
+    @JsonProperty(RegistryManagementConstants.FIELD_SECRETS_NOT_AFTER)
+    @HonoTimestamp
     private Instant notAfter;
     @JsonProperty
     private String comment;

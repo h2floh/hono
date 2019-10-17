@@ -24,15 +24,23 @@ public final class TenantConstants extends RequestResponseApiConstants {
      * an upstream command.
      */
     public static final int DEFAULT_MAX_TTD = 60; // seconds
-
     /**
      * The default message size is set to 0, which implies no minimum size is defined.
      */
     public static final int DEFAULT_MINIMUM_MESSAGE_SIZE = 0;
+
     /**
-     *  Messages that are sent by the Hono client for the Tenant API use this as a prefix for the messageId.
+     * The value indicating an <em>unlimited</em> number of bytes to be allowed for a tenant.
      */
-    public static final String MESSAGE_ID_PREFIX = "tenant-client";
+    public static final long UNLIMITED_BYTES = -1;
+    /**
+     * The value indicating an <em>unlimited</em> number of connections to be allowed for a tenant.
+     */
+    public static final int UNLIMITED_CONNECTIONS = -1;
+    /**
+     * The value indicating <em>unlimited</em> time-to-live for downstream events.
+     */
+    public static final long UNLIMITED_TTL = -1;
 
     /**
      * The name of the property that contains configuration options for specific
@@ -49,10 +57,35 @@ public final class TenantConstants extends RequestResponseApiConstants {
      */
     public static final String FIELD_ADAPTERS_DEVICE_AUTHENTICATION_REQUIRED = "device-authentication-required";
     /**
-     * The name of the property that contains the maximum <em>time til disconnect</em> that protocol
+     * The name of the property that contains the configuration options for the data volume.
+     */
+    public static final String FIELD_DATA_VOLUME = "data-volume";
+    /**
+     * The name of the property that contains the date on which the data volume limit came into effect.
+     */
+    public static final String FIELD_EFFECTIVE_SINCE = "effective-since";
+    /**
+     * The name of the field that contains the extension fields.
+     */
+    public static final String FIELD_EXT = "ext";
+    /**
+     * The name of the property that contains the maximum number of bytes to be allowed for a tenant.
+     */
+    public static final String FIELD_MAX_BYTES = "max-bytes";
+    /**
+     * The name of the property that contains the maximum number of connections to be allowed for a tenant.
+     */
+    public static final String FIELD_MAX_CONNECTIONS = "max-connections";    
+    /**
+     * The name of the property that contains the maximum <em>time til disconnect</em> (seconds) that protocol
      * adapters should use for a tenant.
      */
     public static final String FIELD_MAX_TTD = "max-ttd";
+    /**
+     * The name of the property that contains the maximum <em>time to live</em> (seconds) for
+     * downstream events that protocol adapters should use for a tenant.
+     */
+    public static final String FIELD_MAX_TTL = "max-ttl";
     /**
      * The name of the property that contains the algorithm used for a public key.
      */
@@ -71,7 +104,19 @@ public final class TenantConstants extends RequestResponseApiConstants {
      * The name of the property that contains the trusted certificate authority configured for a tenant.
      */
     public static final String FIELD_PAYLOAD_TRUSTED_CA = "trusted-ca";
-
+    /**
+     * The name of the property that contains the period details for which the data usage is calculated.
+     */
+    public static final String FIELD_PERIOD = "period";
+    /**
+     * The name of the property that contains the number of days for which the data usage is calculated.
+     */
+    public static final String FIELD_PERIOD_NO_OF_DAYS = "no-of-days";    
+    /**
+     * The name of the property that contains the mode of the period for which the data usage
+     * is calculated.
+     */
+    public static final String FIELD_PERIOD_MODE = "mode";    
     /**
      * The name of the property that contains the minimum message size in bytes.
      */

@@ -13,8 +13,9 @@
 
 package org.eclipse.hono.service;
 
-import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,12 +46,13 @@ import org.eclipse.hono.client.RegistrationClientFactory;
 import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.client.TenantClientFactory;
 import org.eclipse.hono.config.ProtocolAdapterProperties;
-import org.eclipse.hono.service.plan.ResourceLimitChecks;
+import org.eclipse.hono.service.resourcelimits.ResourceLimitChecks;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.EventConstants;
 import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.RegistrationConstants;
 import org.eclipse.hono.util.ResourceIdentifier;
+import org.eclipse.hono.util.ResourceLimits;
 import org.eclipse.hono.util.TelemetryConstants;
 import org.eclipse.hono.util.TenantObject;
 import org.junit.jupiter.api.BeforeEach;
@@ -281,78 +283,45 @@ public class AbstractProtocolAdapterBaseTest {
     }
 
     /**
-     * Verifies that the registered default content type is set on a downstream message.
+     * Verifies that the adapter does not add default properties to downstream messages
+     * if disabled for the adapter.
      */
     @Test
-    public void testAddPropertiesAddsDefaultContentType() {
+    public void testAddPropertiesIgnoresDefaultsIfDisabled() {
 
-        final Message message = ProtonHelper.message();
-        final ResourceIdentifier target = ResourceIdentifier.from(TelemetryConstants.TELEMETRY_ENDPOINT, Constants.DEFAULT_TENANT, "4711");
-        final TenantObject tenant = TenantObject.from(Constants.DEFAULT_TENANT, true);
-
-        adapter.addProperties(message, target, null, tenant, newRegistrationAssertionResult("application/hono"), null);
-
-        assertThat(message.getContentType(), is("application/hono"));
-    }
-
-    /**
-     * Verifies that the registered default content type is not set on a downstream message
-     * that already contains a content type.
-     */
-    @Test
-    public void testAddPropertiesDoesNotAddDefaultContentType() {
-
-        final Message message = ProtonHelper.message();
-        message.setContentType("application/existing");
-        final ResourceIdentifier target = ResourceIdentifier.from(TelemetryConstants.TELEMETRY_ENDPOINT, Constants.DEFAULT_TENANT, "4711");
-        final TenantObject tenant = TenantObject.from(Constants.DEFAULT_TENANT, true);
-
-        adapter.addProperties(message, target, null, tenant, newRegistrationAssertionResult("application/hono"), null);
-
-        assertThat(message.getContentType(), is("application/existing"));
-    }
-
-    /**
-     * Verifies that the fall back content type is set on a downstream message
-     * if no default has been configured for the device.
-     */
-    @Test
-    public void testAddPropertiesAddsFallbackContentType() {
-
-        final Message message = ProtonHelper.message();
-        final ResourceIdentifier target = ResourceIdentifier.from(TelemetryConstants.TELEMETRY_ENDPOINT, Constants.DEFAULT_TENANT, "4711");
-        final TenantObject tenant = TenantObject.from(Constants.DEFAULT_TENANT, true);
-
-        adapter.addProperties(message, target, null, tenant, newRegistrationAssertionResult(), null);
-
-        assertThat(message.getContentType(), is(AbstractProtocolAdapterBase.CONTENT_TYPE_OCTET_STREAM));
-    }
-
-    /**
-     * Verifies that default properties configured at the tenant and/or device level
-     * are set on a downstream message.
-     */
-    @Test
-    public void testAddPropertiesAddsCustomProperties() {
+        properties.setDefaultsEnabled(false);
 
         final Message message = ProtonHelper.message();
         final ResourceIdentifier target = ResourceIdentifier.from(EventConstants.EVENT_ENDPOINT, Constants.DEFAULT_TENANT, "4711");
-        final TenantObject tenant = TenantObject.from(Constants.DEFAULT_TENANT, true);
-        tenant.setDefaults(new JsonObject().put(MessageHelper.SYS_HEADER_PROPERTY_TTL, 60).put("custom-tenant", "foo"));
+        final JsonObject assertion = newRegistrationAssertionResult()
+                .put(RegistrationConstants.FIELD_PAYLOAD_DEFAULTS, new JsonObject()
+                    .put(MessageHelper.SYS_HEADER_PROPERTY_TTL, 30)
+                    .put("custom-device", true));
+
+        adapter.addProperties(message, target, null, null, assertion, null);
+
+        assertThat(
+                MessageHelper.getApplicationProperty(message.getApplicationProperties(), "custom-device", Boolean.class),
+                is(nullValue()));
+        assertThat(message.getTtl(), is(0L));
+    }
+
+    /**
+     * Verifies that the TTL for a downstream event is set to the <em>max-ttl</em> specified for
+     * a tenant, if no default is set explicitly.
+     */
+    @Test
+    public void testAddPropertiesUsesMaxTtlByDefault() {
+
+        final Message message = ProtonHelper.message();
+        final ResourceIdentifier target = ResourceIdentifier.from(EventConstants.EVENT_ENDPOINT, Constants.DEFAULT_TENANT, "4711");
+        final TenantObject tenant = TenantObject.from(Constants.DEFAULT_TENANT, true)
+                .setResourceLimits(new ResourceLimits().setMaxTtl(15L));
         final JsonObject assertion = newRegistrationAssertionResult();
-        assertion.put(
-                RegistrationConstants.FIELD_PAYLOAD_DEFAULTS,
-                new JsonObject().put(MessageHelper.SYS_HEADER_PROPERTY_TTL, 30).put("custom-device", true));
 
         adapter.addProperties(message, target, null, tenant, assertion, null);
 
-        assertThat(
-                MessageHelper.getApplicationProperty(message.getApplicationProperties(), "custom-tenant", String.class),
-                is("foo"));
-        assertThat(
-                MessageHelper.getApplicationProperty(message.getApplicationProperties(), "custom-device", Boolean.class),
-                is(Boolean.TRUE));
-        assertThat(message.getTtl(), is(30L));
+        assertThat(message.getTtl(), is(15000L));
     }
 
     /**

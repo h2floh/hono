@@ -13,39 +13,34 @@ hono:
     keyPath: /run/secrets/hono.eclipse.org-key.pem
     certPath: /run/secrets/hono.eclipse.org-cert.pem
     maxPayloadSize: 8096
+    tenantIdleTimeout: 1h
   messaging:
     name: 'Hono Kura Adapter'
     host: ${hono.amqp-network.service}${service.suffix}
     port: 5673
     amqpHostname: hono-internal
-    inactiveLinkTimeout: 1h
   registration:
     name: 'Hono Kura Adapter'
     host: ${hono.registration.service}${service.suffix}
     port: 5672
     credentialsPath: /run/secrets/kura-adapter.credentials
-    inactiveLinkTimeout: 1h
   credentials:
     name: 'Hono Kura Adapter'
     host: ${hono.registration.service}${service.suffix}
     port: 5672
     credentialsPath: /run/secrets/kura-adapter.credentials
-    inactiveLinkTimeout: 1h
   tenant:
     name: 'Hono Kura Adapter'
     host: ${hono.registration.service}${service.suffix}
     port: 5672
     credentialsPath: /run/secrets/kura-adapter.credentials
-    inactiveLinkTimeout: 1h
   deviceConnection:
     name: 'Hono Kura Adapter'
     host: ${hono.registration.service}${service.suffix}
     port: 5672
     credentialsPath: /run/secrets/kura-adapter.credentials
-    inactiveLinkTimeout: 1h
   command:
     name: 'Hono Kura Adapter'
     host: ${hono.amqp-network.service}${service.suffix}
     port: 5673
     amqpHostname: hono-internal
-    inactiveLinkTimeout: 1h

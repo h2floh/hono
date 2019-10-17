@@ -16,6 +16,7 @@ package org.eclipse.hono.tests;
 import java.net.HttpURLConnection;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 
 import io.vertx.core.http.HttpClientResponse;
@@ -45,6 +46,10 @@ public final class CrudHttpClient {
      * The content type indicating an application specific JSON payload.
      */
     public static final String CONTENT_TYPE_JSON = "application/json";
+    /**
+     * The example value to be used as the origin of the call.
+     */
+    public static final String ORIGIN_URI = "http://hono.eclipse.org";
 
     private final Logger LOGGER = LoggerFactory.getLogger(getClass());
     private final HttpClient client;
@@ -96,7 +101,7 @@ public final class CrudHttpClient {
     public Future<MultiMap> options(
             final String uri,
             final MultiMap requestHeaders,
-            final Predicate<Integer> successPredicate) {
+            final IntPredicate successPredicate) {
 
         Objects.requireNonNull(uri);
         return options(createRequestOptions().setURI(uri), requestHeaders, successPredicate);
@@ -115,7 +120,7 @@ public final class CrudHttpClient {
     public Future<MultiMap> options(
             final RequestOptions requestOptions,
             final MultiMap requestHeaders,
-            final Predicate<Integer> successPredicate) {
+            final IntPredicate successPredicate) {
 
         Objects.requireNonNull(requestOptions);
         Objects.requireNonNull(successPredicate);
@@ -154,7 +159,7 @@ public final class CrudHttpClient {
      */
     public Future<MultiMap> create(final String uri, final JsonObject body,
             final Predicate<HttpClientResponse> successPredicate) {
-        return create(uri, body, CONTENT_TYPE_JSON, successPredicate);
+        return create(uri, body, CONTENT_TYPE_JSON, successPredicate, false);
     }
 
     /**
@@ -164,13 +169,18 @@ public final class CrudHttpClient {
      * @param body The body to post (may be {@code null}).
      * @param contentType The content type to set in the request (may be {@code null}).
      * @param successPredicate A predicate on the HTTP response for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI, content type or predicate are {@code null}.
      */
     public Future<MultiMap> create(final String uri, final JsonObject body, final String contentType,
-            final Predicate<HttpClientResponse> successPredicate) {
+            final Predicate<HttpClientResponse> successPredicate, final boolean checkCorsHeaders) {
 
-        return create(uri, Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null), contentType, successPredicate);
+        return create(uri,
+                Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null),
+                contentType,
+                successPredicate,
+                checkCorsHeaders);
     }
 
     /**
@@ -180,17 +190,23 @@ public final class CrudHttpClient {
      * @param body The body to post (may be {@code null}).
      * @param contentType The content type to set in the request (may be {@code null}).
      * @param successPredicate A predicate on the HTTP response for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
     public Future<MultiMap> create(final String uri, final Buffer body, final String contentType,
-            final Predicate<HttpClientResponse> successPredicate) {
+            final Predicate<HttpClientResponse> successPredicate, final boolean checkCorsHeaders) {
 
-        final MultiMap headers = Optional.ofNullable(contentType)
+        final MultiMap requestHeaders = Optional.ofNullable(contentType)
                 .map(ct -> MultiMap.caseInsensitiveMultiMap().add(HttpHeaders.CONTENT_TYPE, contentType))
                 .orElse(null);
 
-        return create(uri, body, headers, successPredicate);
+        return create(
+                createRequestOptions().setURI(uri),
+                body,
+                requestHeaders,
+                successPredicate,
+                checkCorsHeaders);
     }
 
     /**
@@ -216,7 +232,8 @@ public final class CrudHttpClient {
                 createRequestOptions().setURI(uri),
                 body,
                 requestHeaders,
-                successPredicate);
+                successPredicate,
+                false);
     }
 
     /**
@@ -226,6 +243,7 @@ public final class CrudHttpClient {
      * @param body The body to post (may be {@code null}).
      * @param requestHeaders The headers to include in the request (may be {@code null}).
      * @param successPredicate A predicate on the HTTP response for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if options or predicate are {@code null}.
      */
@@ -233,7 +251,8 @@ public final class CrudHttpClient {
             final RequestOptions requestOptions,
             final Buffer body,
             final MultiMap requestHeaders,
-            final Predicate<HttpClientResponse> successPredicate) {
+            final Predicate<HttpClientResponse> successPredicate,
+            final boolean checkCorsHeaders) {
 
         Objects.requireNonNull(requestOptions);
         Objects.requireNonNull(successPredicate);
@@ -246,6 +265,9 @@ public final class CrudHttpClient {
                     .handler(response -> {
                         LOGGER.trace("response status code {}", response.statusCode());
                         if (successPredicate.test(response)) {
+                            if (checkCorsHeaders) {
+                                checkCorsHeaders(response, result);
+                            }
                             result.tryComplete(response.headers());
                         } else {
                             result.tryFail(newServiceInvocationException(response.statusCode()));
@@ -254,6 +276,9 @@ public final class CrudHttpClient {
 
                 if (requestHeaders != null) {
                     req.headers().addAll(requestHeaders);
+                }
+                if (checkCorsHeaders) {
+                    req.headers().add(HttpHeaders.ORIGIN, ORIGIN_URI);
                 }
                 if (body == null) {
                     req.end();
@@ -275,7 +300,7 @@ public final class CrudHttpClient {
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
-    public Future<MultiMap> update(final String uri, final JsonObject body, final Predicate<Integer> successPredicate) {
+    public Future<MultiMap> update(final String uri, final JsonObject body, final IntPredicate successPredicate) {
         return update(uri, body, CONTENT_TYPE_JSON, successPredicate);
     }
 
@@ -290,7 +315,7 @@ public final class CrudHttpClient {
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
-    public Future<MultiMap> update(final String uri, final JsonArray body, final Predicate<Integer> successPredicate) {
+    public Future<MultiMap> update(final String uri, final JsonArray body, final IntPredicate successPredicate) {
         return update(uri, body, CONTENT_TYPE_JSON, successPredicate);
     }
 
@@ -305,8 +330,9 @@ public final class CrudHttpClient {
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
     public Future<MultiMap> update(final String uri, final JsonObject body, final String contentType,
-            final Predicate<Integer> successPredicate) {
-        return update(uri, Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null), contentType, successPredicate);
+            final IntPredicate successPredicate) {
+        return update(uri, Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null), contentType, successPredicate, true);
+
     }
 
     /**
@@ -320,8 +346,9 @@ public final class CrudHttpClient {
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
     public Future<MultiMap> update(final String uri, final JsonArray body, final String contentType,
-            final Predicate<Integer> successPredicate) {
-        return update(uri, Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null), contentType, successPredicate);
+            final IntPredicate successPredicate) {
+        return update(uri, Optional.ofNullable(body).map(json -> json.toBuffer()).orElse(null), contentType, successPredicate, true);
+
     }
 
     /**
@@ -331,17 +358,18 @@ public final class CrudHttpClient {
      * @param body The content to update the resource with.
      * @param contentType The content type to set in the request.
      * @param successPredicate A predicate on the returned HTTP status code for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
     public Future<MultiMap> update(final String uri, final Buffer body, final String contentType,
-            final Predicate<Integer> successPredicate) {
+            final IntPredicate successPredicate, final boolean checkCorsHeaders) {
 
         final MultiMap headers = Optional.ofNullable(contentType)
                 .map(ct -> MultiMap.caseInsensitiveMultiMap().add(HttpHeaders.CONTENT_TYPE, ct))
                 .orElse(null);
 
-        return update(uri, body, headers, successPredicate);
+        return update(uri, body, headers, successPredicate, checkCorsHeaders);
     }
 
     /**
@@ -358,7 +386,7 @@ public final class CrudHttpClient {
             final String uri,
             final Buffer body,
             final MultiMap requestHeaders,
-            final Predicate<Integer> successPredicate) {
+            final IntPredicate successPredicate) {
 
         Objects.requireNonNull(uri);
         Objects.requireNonNull(successPredicate);
@@ -367,7 +395,37 @@ public final class CrudHttpClient {
                 createRequestOptions().setURI(uri),
                 body,
                 requestHeaders,
-                successPredicate);
+                successPredicate,
+                false);
+    }
+
+    /**
+     * Updates a resource using an HTTP PUT request.
+     *
+     * @param uri The resource to update.
+     * @param body The content to update the resource with.
+     * @param requestHeaders The headers to include in the request.
+     * @param successPredicate A predicate on the response for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
+     * @return A future that will succeed if the predicate evaluates to {@code true}.
+     * @throws NullPointerException if URI or predicate are {@code null}.
+     */
+    public Future<MultiMap> update(
+            final String uri,
+            final Buffer body,
+            final MultiMap requestHeaders,
+            final IntPredicate successPredicate,
+            final boolean checkCorsHeaders) {
+
+        Objects.requireNonNull(uri);
+        Objects.requireNonNull(successPredicate);
+
+        return update(
+                createRequestOptions().setURI(uri),
+                body,
+                requestHeaders,
+                successPredicate,
+                checkCorsHeaders);
     }
 
     /**
@@ -377,6 +435,7 @@ public final class CrudHttpClient {
      * @param body The content to update the resource with.
      * @param requestHeaders The headers to include in the request.
      * @param successPredicate A predicate on the response for determining success.
+     * @param checkCorsHeaders Whether to set and check CORS headers.
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if options or predicate are {@code null}.
      */
@@ -384,7 +443,8 @@ public final class CrudHttpClient {
             final RequestOptions requestOptions,
             final Buffer body,
             final MultiMap requestHeaders,
-            final Predicate<Integer> successPredicate) {
+            final IntPredicate successPredicate,
+            final boolean checkCorsHeaders) {
 
         Objects.requireNonNull(requestOptions);
         Objects.requireNonNull(successPredicate);
@@ -396,6 +456,9 @@ public final class CrudHttpClient {
             final HttpClientRequest req = client.put(requestOptions)
                     .handler(response -> {
                         if (successPredicate.test(response.statusCode())) {
+                            if (checkCorsHeaders) {
+                                checkCorsHeaders(response, result);
+                            }
                             result.tryComplete(response.headers());
                         } else {
                             result.tryFail(newServiceInvocationException(response.statusCode()));
@@ -404,6 +467,9 @@ public final class CrudHttpClient {
 
                 if (requestHeaders != null) {
                     req.headers().addAll(requestHeaders);
+                }
+                if (checkCorsHeaders) {
+                    req.headers().add(HttpHeaders.ORIGIN, ORIGIN_URI);
                 }
                 if (body == null) {
                     req.end();
@@ -423,7 +489,7 @@ public final class CrudHttpClient {
      *         future will contain the response body.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
-    public Future<Buffer> get(final String uri, final Predicate<Integer> successPredicate) {
+    public Future<Buffer> get(final String uri, final IntPredicate successPredicate) {
 
         Objects.requireNonNull(uri);
         Objects.requireNonNull(successPredicate);
@@ -439,7 +505,7 @@ public final class CrudHttpClient {
      *         future will contain the response body.
      * @throws NullPointerException if options or predicate are {@code null}.
      */
-    public Future<Buffer> get(final RequestOptions requestOptions, final Predicate<Integer> successPredicate) {
+    public Future<Buffer> get(final RequestOptions requestOptions, final IntPredicate successPredicate) {
 
         Objects.requireNonNull(requestOptions);
         Objects.requireNonNull(successPredicate);
@@ -451,11 +517,15 @@ public final class CrudHttpClient {
             final HttpClientRequest req = client.get(requestOptions)
             .handler(response -> {
                 if (successPredicate.test(response.statusCode())) {
+                    if (response.statusCode() < 400) {
+                        checkCorsHeaders(response, result);
+                    }
                     response.bodyHandler(body -> result.tryComplete(body));
                 } else {
                     result.tryFail(newServiceInvocationException(response.statusCode()));
                 }
             }).exceptionHandler(result::tryFail);
+            req.headers().add(HttpHeaders.ORIGIN, ORIGIN_URI);
             req.end();
         });
 
@@ -470,7 +540,7 @@ public final class CrudHttpClient {
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if URI or predicate are {@code null}.
      */
-    public Future<Void> delete(final String uri, final Predicate<Integer> successPredicate) {
+    public Future<Void> delete(final String uri, final IntPredicate successPredicate) {
 
         Objects.requireNonNull(uri);
         Objects.requireNonNull(successPredicate);
@@ -486,7 +556,7 @@ public final class CrudHttpClient {
      * @return A future that will succeed if the predicate evaluates to {@code true}.
      * @throws NullPointerException if options or predicate are {@code null}.
      */
-    public Future<Void> delete(final RequestOptions requestOptions, final Predicate<Integer> successPredicate) {
+    public Future<Void> delete(final RequestOptions requestOptions, final IntPredicate successPredicate) {
 
         Objects.requireNonNull(requestOptions);
         Objects.requireNonNull(successPredicate);
@@ -499,15 +569,30 @@ public final class CrudHttpClient {
             .handler(response -> {
                 LOGGER.debug("got response [status: {}]", response.statusCode());
                 if (successPredicate.test(response.statusCode())) {
+                    checkCorsHeaders(response, result);
                     result.tryComplete();
                 } else {
                     result.tryFail(newServiceInvocationException(response.statusCode()));
                 }
             }).exceptionHandler(result::tryFail);
+            req.headers().add(HttpHeaders.ORIGIN, ORIGIN_URI);
             req.end();
         });
 
         return result;
+    }
+
+    /**
+     * Checks if the the response have proper headers set.
+     *
+     * @param response The response to check.
+     * @param result the result will fail in case headers are not set
+     */
+    private void checkCorsHeaders(final HttpClientResponse response, final Future result) {
+        final MultiMap headers = response.headers();
+        if (!"*".equals(headers.get(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN))) {
+            result.fail("Response does not contain proper Access-Control-Allow-Origin header");
+        }
     }
 
     private static ServiceInvocationException newServiceInvocationException(final int statusCode) {

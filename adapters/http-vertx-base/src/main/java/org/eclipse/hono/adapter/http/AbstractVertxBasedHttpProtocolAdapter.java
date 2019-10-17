@@ -57,6 +57,7 @@ import io.opentracing.contrib.vertx.ext.web.WebSpanDecorator;
 import io.opentracing.tag.Tags;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
@@ -190,7 +191,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                     onStartupSuccess();
                     startFuture.complete();
                 } catch (final Exception e) {
-                    LOG.error("error in onStartupSuccess", e);
+                    log.error("error in onStartupSuccess", e);
                     startFuture.fail(e);
                 }
             }, startFuture);
@@ -304,7 +305,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         matchAllRoute.failureHandler(new DefaultFailureHandler());
 
         // 4. BodyHandler with request size limit
-        LOG.info("limiting size of inbound request body to {} bytes", getConfig().getMaxPayloadSize());
+        log.info("limiting size of inbound request body to {} bytes", getConfig().getMaxPayloadSize());
         final BodyHandler bodyHandler = BodyHandler.create(DEFAULT_UPLOADS_DIRECTORY)
                 .setBodyLimit(getConfig().getMaxPayloadSize());
         matchAllRoute.handler(bodyHandler);
@@ -416,10 +417,10 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
             }
             server.requestHandler(router).listen(done -> {
                 if (done.succeeded()) {
-                    LOG.info("secure http server listening on {}:{}", bindAddress, server.actualPort());
+                    log.info("secure http server listening on {}:{}", bindAddress, server.actualPort());
                     result.complete(done.result());
                 } else {
-                    LOG.error("error while starting up secure http server", done.cause());
+                    log.error("error while starting up secure http server", done.cause());
                     result.fail(done.cause());
                 }
             });
@@ -439,10 +440,10 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
             }
             insecureServer.requestHandler(router).listen(done -> {
                 if (done.succeeded()) {
-                    LOG.info("insecure http server listening on {}:{}", bindAddress, insecureServer.actualPort());
+                    log.info("insecure http server listening on {}:{}", bindAddress, insecureServer.actualPort());
                     result.complete(done.result());
                 } else {
-                    LOG.error("error while starting up insecure http server", done.cause());
+                    log.error("error while starting up insecure http server", done.cause());
                     result.fail(done.cause());
                 }
             });
@@ -458,7 +459,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         try {
             preShutdown();
         } catch (final Exception e) {
-            LOG.error("error in preShutdown", e);
+            log.error("error in preShutdown", e);
         }
 
         final Future<Void> serverStopTracker = Future.future();
@@ -617,6 +618,9 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         }
 
         final Device authenticatedDevice = getAuthenticatedDevice(ctx);
+        final String gatewayId = authenticatedDevice != null && !deviceId.equals(authenticatedDevice.getDeviceId())
+                ? authenticatedDevice.getDeviceId()
+                : null;
         final Span currentSpan = TracingHelper
                 .buildChildSpan(tracer, TracingHandler.serverSpanContext(ctx),
                         "upload " + endpoint.getCanonicalName())
@@ -657,53 +661,56 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                     });
                 });
         final Future<MessageConsumer> commandConsumerTracker = ttdTracker
-                .compose(ttd -> createCommandConsumer(ttd, tenantTracker.result(), deviceId, ctx, responseReady,
-                        currentSpan));
+                .compose(ttd -> createCommandConsumer(ttd, tenantTracker.result(), deviceId, gatewayId, ctx,
+                        responseReady, currentSpan));
 
         CompositeFuture.all(senderTracker, commandConsumerTracker)
-                .compose(ok -> {
+        .compose(ok -> {
 
-                    final DownstreamSender sender = senderTracker.result();
+            final DownstreamSender sender = senderTracker.result();
 
-                    final Integer ttd = Optional.ofNullable(commandConsumerTracker.result()).map(c -> ttdTracker.result())
-                            .orElse(null);
-                    final Message downstreamMessage = newMessage(
-                            ResourceIdentifier.from(endpoint.getCanonicalName(), tenant, deviceId),
-                            ctx.request().uri(),
-                            contentType,
-                            payload,
-                            tenantTracker.result(),
-                            tokenTracker.result(),
-                            ttd);
-                    customizeDownstreamMessage(downstreamMessage, ctx);
+            final Integer ttd = Optional.ofNullable(commandConsumerTracker.result()).map(c -> ttdTracker.result())
+                    .orElse(null);
+            final Message downstreamMessage = newMessage(
+                    ResourceIdentifier.from(endpoint.getCanonicalName(), tenant, deviceId),
+                    ctx.request().uri(),
+                    contentType,
+                    payload,
+                    tenantTracker.result(),
+                    tokenTracker.result(),
+                    ttd,
+                    EndpointType.EVENT.equals(endpoint) ? HttpUtils.getTimeToLive(ctx) : null);
+            customizeDownstreamMessage(downstreamMessage, ctx);
 
-                    addConnectionCloseHandler(ctx, commandConsumerTracker.result(), tenant, deviceId, currentSpan);
+            addConnectionCloseHandler(ctx, commandConsumerTracker.result(), tenant, deviceId, currentSpan);
 
-                    if (MetricsTags.QoS.AT_MOST_ONCE.equals(qos)) {
-                        return CompositeFuture.all(
-                                sender.send(downstreamMessage, currentSpan.context()),
-                                responseReady)
-                                .map(s -> (Void) null);
-                    } else {
-                        // unsettled
-                        return CompositeFuture.all(
-                                sender.sendAndWaitForOutcome(downstreamMessage, currentSpan.context()),
-                                responseReady)
-                                .map(s -> (Void) null);
-                    }
-                }).recover(t -> {
+            if (MetricsTags.QoS.AT_MOST_ONCE.equals(qos)) {
+                return CompositeFuture.all(
+                        sender.send(downstreamMessage, currentSpan.context()),
+                        responseReady)
+                        .map(s -> (Void) null);
+            } else {
+                // unsettled
+                return CompositeFuture.all(
+                        sender.sendAndWaitForOutcome(downstreamMessage, currentSpan.context()),
+                        responseReady)
+                        .map(s -> (Void) null);
+            }
+        })
+        .recover(t -> {
             if (t instanceof ResourceConflictException) {
                 // simply return an empty response
-                LOG.debug("ignoring empty notification [tenant: {}, device-id: {}], command consumer is already in use",
+                log.debug("ignoring empty notification [tenant: {}, device-id: {}], command consumer is already in use",
                         tenant, deviceId);
                 return Future.succeededFuture();
             } else {
                 return Future.failedFuture(t);
             }
-        }).map(proceed -> {
+        })
+        .map(proceed -> {
 
             if (ctx.response().closed()) {
-                LOG.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]: response already closed",
+                log.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]: response already closed",
                         endpoint, tenant, deviceId);
                 TracingHelper.logError(currentSpan, "failed to send HTTP response to device: response already closed");
                 currentSpan.finish();
@@ -711,7 +718,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                 final CommandContext commandContext = ctx.get(CommandContext.KEY_COMMAND_CONTEXT);
                 setResponsePayload(ctx.response(), commandContext, currentSpan);
                 ctx.addBodyEndHandler(ok -> {
-                    LOG.trace("successfully processed [{}] message for device [tenantId: {}, deviceId: {}]",
+                    log.trace("successfully processed [{}] message for device [tenantId: {}, deviceId: {}]",
                             endpoint, tenant, deviceId);
                     if (commandContext != null) {
                         commandContext.getCurrentSpan().log("forwarded command to device in HTTP response body");
@@ -740,7 +747,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                     Optional.ofNullable(commandConsumerTracker.result()).ifPresent(consumer -> consumer.close(null));
                 });
                 ctx.response().exceptionHandler(t -> {
-                    LOG.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]",
+                    log.debug("failed to send http response for [{}] message from device [tenantId: {}, deviceId: {}]",
                             endpoint, tenant, deviceId, t);
                     if (commandContext != null) {
                         commandContext.getCurrentSpan().log("failed to forward command to device in HTTP response body");
@@ -767,9 +774,10 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
 
             return proceed;
 
-        }).recover(t -> {
+        })
+        .recover(t -> {
 
-            LOG.debug("cannot process [{}] message from device [tenantId: {}, deviceId: {}]",
+            log.debug("cannot process [{}] message from device [tenantId: {}, deviceId: {}]",
                     endpoint, tenant, deviceId, t);
             final CommandContext commandContext = ctx.get(CommandContext.KEY_COMMAND_CONTEXT);
             if (commandContext != null) {
@@ -837,7 +845,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
 
         if (messageConsumer != null && !ctx.response().closed()) {
             ctx.response().closeHandler(v -> {
-                LOG.debug("device [tenant: {}, device-id: {}] closed connection before response could be sent",
+                log.debug("device [tenant: {}, device-id: {}] closed connection before response could be sent",
                         tenantId, deviceId);
                 currentSpan.log("device closed connection");
                 cancelCommandReceptionTimer(ctx);
@@ -881,12 +889,16 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         final Command command = commandContext.getCommand();
         response.putHeader(Constants.HEADER_COMMAND, command.getName());
         currentSpan.setTag(Constants.HEADER_COMMAND, command.getName());
-        LOG.debug("adding command [name: {}, request-id: {}] to response for device [tenant-id: {}, device-id: {}]",
+        log.debug("adding command [name: {}, request-id: {}] to response for device [tenant-id: {}, device-id: {}]",
                 command.getName(), command.getRequestId(), command.getTenant(), command.getDeviceId());
 
         if (!command.isOneWay()) {
             response.putHeader(Constants.HEADER_COMMAND_REQUEST_ID, command.getRequestId());
             currentSpan.setTag(Constants.HEADER_COMMAND_REQUEST_ID, command.getRequestId());
+        }
+        if (command.isTargetedAtGateway()) {
+            response.putHeader(Constants.HEADER_COMMAND_TARGET_DEVICE, command.getOriginalDeviceId());
+            currentSpan.setTag(Constants.HEADER_COMMAND_TARGET_DEVICE, command.getOriginalDeviceId());
         }
 
         response.setStatusCode(HttpURLConnection.HTTP_OK);
@@ -899,6 +911,8 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
      * @param ttdSecs The number of seconds the device waits for a command.
      * @param tenantObject The tenant configuration object.
      * @param deviceId The identifier of the device.
+     * @param gatewayId The identifier of the gateway that is acting on behalf of the device
+     *                  or {@code null} otherwise.
      * @param ctx The device's currently executing HTTP request.
      * @param responseReady A future to complete once one of the following conditions are met:
      *              <ul>
@@ -919,12 +933,13 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
      *         The future will be failed with a {@code ResourceConflictException} if the
      *         message consumer for the device is already in use and the request contains
      *         an empty notification (which does not need to be forwarded downstream).
-     * @throws NullPointerException if any of the parameters other than TTD are {@code null}.
+     * @throws NullPointerException if any of the parameters other than TTD or gatewayId is {@code null}.
      */
     protected final Future<MessageConsumer> createCommandConsumer(
             final Integer ttdSecs,
             final TenantObject tenantObject,
             final String deviceId,
+            final String gatewayId,
             final RoutingContext ctx,
             final Future<Void> responseReady,
             final Span currentSpan) {
@@ -939,93 +954,111 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
             // no need to wait for a command
             responseReady.tryComplete();
             return Future.succeededFuture();
-        } else {
-            currentSpan.setTag(MessageHelper.APP_PROPERTY_DEVICE_TTD, ttdSecs);
-            return getCommandConsumerFactory().createCommandConsumer(
+        }
+
+        currentSpan.setTag(MessageHelper.APP_PROPERTY_DEVICE_TTD, ttdSecs);
+        final Handler<CommandContext> commandHandler = commandContext -> {
+
+            Tags.COMPONENT.set(commandContext.getCurrentSpan(), getTypeName());
+            final Command command = commandContext.getCommand();
+            final Sample commandSample = getMetrics().startTimer();
+            if (isCommandValid(command, currentSpan)) {
+                if (responseReady.isComplete()) {
+                    // the timer has already fired, release the command
+                    getMetrics().reportCommand(
+                            command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                            tenantObject.getTenantId(),
+                            tenantObject,
+                            ProcessingOutcome.UNDELIVERABLE,
+                            command.getPayloadSize(),
+                            commandSample);
+                    log.debug("command for device has already fired [tenantId: {}, deviceId: {}]",
+                            tenantObject.getTenantId(), deviceId);
+                    commandContext.release();
+                } else {
+                    checkMessageLimit(tenantObject, command.getPayloadSize())
+                            .setHandler(result -> {
+                                if (result.succeeded()) {
+                                    addMicrometerSample(commandContext, commandSample);
+                                    // put command context to routing context and notify
+                                    ctx.put(CommandContext.KEY_COMMAND_CONTEXT, commandContext);
+                                } else {
+                                    // issue credit so that application(s) can send the next command
+                                    commandContext.reject(getErrorCondition(result.cause()), 1);
+                                    metrics.reportCommand(
+                                            command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                                            tenantObject.getTenantId(),
+                                            tenantObject,
+                                            ProcessingOutcome.from(result.cause()),
+                                            command.getPayloadSize(),
+                                            commandSample);
+                                }
+                                cancelCommandReceptionTimer(ctx);
+                                setTtdStatus(ctx, TtdStatus.COMMAND);
+                                responseReady.tryComplete();
+                            });
+                }
+            } else {
+                getMetrics().reportCommand(
+                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                        tenantObject.getTenantId(),
+                        tenantObject,
+                        ProcessingOutcome.UNPROCESSABLE,
+                        command.getPayloadSize(),
+                        commandSample);
+                log.debug("command message is invalid: {}", command);
+                commandContext.reject(new ErrorCondition(Constants.AMQP_BAD_REQUEST, "malformed command message"));
+            }
+            // we do not issue any new credit because the
+            // consumer is supposed to deliver a single command
+            // only per HTTP request
+        };
+
+        final Handler<Void> remoteCloseHandler = remoteDetach -> {
+            log.debug("peer closed command receiver link [tenant-id: {}, device-id: {}, gateway-id: {}]",
+                    tenantObject.getTenantId(), deviceId, gatewayId);
+            // command consumer is closed by closeHandler, no explicit close necessary here
+        };
+
+        final Future<MessageConsumer> commandConsumerFuture;
+        if (gatewayId != null) {
+            // gateway scenario
+            commandConsumerFuture = getCommandConsumerFactory().createCommandConsumer(
                     tenantObject.getTenantId(),
                     deviceId,
-                    commandContext -> {
-
-                        Tags.COMPONENT.set(commandContext.getCurrentSpan(), getTypeName());
-                        final Command command = commandContext.getCommand();
-                        final Sample commandSample = getMetrics().startTimer();
-                        if (isCommandValid(command, currentSpan)) {
-                            if (responseReady.isComplete()) {
-                                // the timer has already fired, release the command
-                                getMetrics().reportCommand(
-                                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
-                                        tenantObject.getTenantId(),
-                                        tenantObject,
-                                        ProcessingOutcome.UNDELIVERABLE,
-                                        command.getPayloadSize(),
-                                        commandSample);
-                                LOG.debug("command for device has already fired [tenantId: {}, deviceId: {}]",
-                                        tenantObject.getTenantId(), deviceId);
-                                commandContext.release();
-                            } else {
-                                checkMessageLimit(tenantObject, command.getPayloadSize())
-                                        .setHandler(result -> {
-                                            if (result.succeeded()) {
-                                                addMicrometerSample(commandContext, commandSample);
-                                                // put command context to routing context and notify
-                                                ctx.put(CommandContext.KEY_COMMAND_CONTEXT, commandContext);
-                                            } else {
-                                                // issue credit so that application(s) can send the next command
-                                                commandContext.reject(getErrorCondition(result.cause()), 1);
-                                                metrics.reportCommand(
-                                                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
-                                                        tenantObject.getTenantId(),
-                                                        tenantObject,
-                                                        ProcessingOutcome.from(result.cause()),
-                                                        command.getPayloadSize(),
-                                                        commandSample);
-                                            }
-                                            cancelCommandReceptionTimer(ctx);
-                                            setTtdStatus(ctx, TtdStatus.COMMAND);                                            
-                                            responseReady.tryComplete();
-                                        });
-                            }
-                        } else {
-                            getMetrics().reportCommand(
-                                    command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
-                                    tenantObject.getTenantId(),
-                                    tenantObject,
-                                    ProcessingOutcome.UNPROCESSABLE,
-                                    command.getPayloadSize(),
-                                    commandSample);
-                            LOG.debug("command message is invalid: {}", command);
-                            commandContext.reject(new ErrorCondition(Constants.AMQP_BAD_REQUEST, "malformed command message"));
-                        }
-                        // we do not issue any new credit because the
-                        // consumer is supposed to deliver a single command
-                        // only per HTTP request
-                    },
-                    remoteDetach -> {
-                        LOG.debug("peer closed command receiver link [tenant-id: {}, device-id: {}]", tenantObject.getTenantId(), deviceId);
-                        // command consumer is closed by closeHandler, no explicit close necessary here
-                    }).map(consumer -> {
-                        if (!responseReady.isComplete()) {
-                            // if the request was not responded already, add a timer for triggering an empty response
-                            addCommandReceptionTimer(ctx, responseReady, ttdSecs);
-                        }
-                        return consumer;
-                    }).recover(t -> {
-                        if (t instanceof ResourceConflictException) {
-                            // another request from the same device that contains
-                            // a TTD value is already being processed
-                            if (HttpUtils.isEmptyNotification(ctx)) {
-                                // no need to forward message downstream
-                                return Future.failedFuture(t);
-                            } else {
-                                // let the other request handle the command (if any)
-                                responseReady.tryComplete();
-                                return Future.succeededFuture();
-                            }
-                        } else {
-                            return Future.failedFuture(t);
-                        }
-                    });
+                    gatewayId,
+                    commandHandler,
+                    remoteCloseHandler);
+        } else {
+            commandConsumerFuture = getCommandConsumerFactory().createCommandConsumer(
+                    tenantObject.getTenantId(),
+                    deviceId,
+                    commandHandler,
+                    remoteCloseHandler);
         }
+        return commandConsumerFuture
+                .map(consumer -> {
+                    if (!responseReady.isComplete()) {
+                        // if the request was not responded already, add a timer for triggering an empty response
+                        addCommandReceptionTimer(ctx, responseReady, ttdSecs);
+                    }
+                    return consumer;
+                }).recover(t -> {
+                    if (t instanceof ResourceConflictException) {
+                        // another request from the same device that contains
+                        // a TTD value is already being processed
+                        if (HttpUtils.isEmptyNotification(ctx)) {
+                            // no need to forward message downstream
+                            return Future.failedFuture(t);
+                        } else {
+                            // let the other request handle the command (if any)
+                            responseReady.tryComplete();
+                            return Future.succeededFuture();
+                        }
+                    } else {
+                        return Future.failedFuture(t);
+                    }
+                });
     }
 
     /**
@@ -1060,11 +1093,11 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
 
         final Long timerId = ctx.vertx().setTimer(delaySecs * 1000L, id -> {
 
-            LOG.trace("time to wait [{}s] for command expired [timer id: {}]", delaySecs, id);
+            log.trace("time to wait [{}s] for command expired [timer id: {}]", delaySecs, id);
 
             if (responseReady.isComplete()) {
                 // a command has been sent to the device already
-                LOG.trace("response already sent, nothing to do ...");
+                log.trace("response already sent, nothing to do ...");
             } else {
                 // no command to be sent,
                 // send empty response
@@ -1073,7 +1106,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
             }
         });
 
-        LOG.trace("adding command reception timer [id: {}]", timerId);
+        log.trace("adding command reception timer [id: {}]", timerId);
 
         ctx.put(KEY_TIMER_ID, timerId);
     }
@@ -1083,9 +1116,9 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         final Long timerId = ctx.get(KEY_TIMER_ID);
         if (timerId != null && timerId >= 0) {
             if (ctx.vertx().cancelTimer(timerId)) {
-                LOG.trace("Cancelled timer id {}", timerId);
+                log.trace("Cancelled timer id {}", timerId);
             } else {
-                LOG.debug("Could not cancel timer id {}", timerId);
+                log.debug("Could not cancel timer id {}", timerId);
             }
         }
     }
@@ -1115,7 +1148,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
         final Buffer payload = ctx.getBody();
         final String contentType = HttpUtils.getContentType(ctx);
 
-        LOG.debug("processing response to command [tenantId: {}, deviceId: {}, cmd-req-id: {}, status code: {}]",
+        log.debug("processing response to command [tenantId: {}, deviceId: {}, cmd-req-id: {}, status code: {}]",
                 tenant, deviceId, commandRequestId, responseStatus);
 
         final Device authenticatedDevice = getAuthenticatedDevice(ctx);
@@ -1156,7 +1189,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                             .compose(ok -> sendCommandResponse(tenant, commandResponseTracker.result(),
                                     currentSpan.context()))
                             .map(delivery -> {
-                                LOG.trace("delivered command response [command-request-id: {}] to application",
+                                log.trace("delivered command response [command-request-id: {}] to application",
                                         commandRequestId);
                                 currentSpan.log("delivered command response to application");
                                 metrics.reportCommand(
@@ -1171,7 +1204,7 @@ public abstract class AbstractVertxBasedHttpProtocolAdapter<T extends HttpProtoc
                                 return delivery;
                             });
                 }).otherwise(t -> {
-                    LOG.debug("could not send command response [command-request-id: {}] to application",
+                    log.debug("could not send command response [command-request-id: {}] to application",
                             commandRequestId, t);
                     TracingHelper.logError(currentSpan, t);
                     currentSpan.finish();

@@ -103,6 +103,12 @@ public final class Constants {
      * issued by a Device Registration service.
      */
     public static final Symbol CAP_REG_ASSERTION_VALIDATION = Symbol.valueOf("hono-reg-assertion");
+    /**
+     * The AMQP capability indicating support for routing messages as defined by
+     * <a href="http://docs.oasis-open.org/amqp/anonterm/v1.0/anonterm-v1.0.html">
+     * Anonymous Terminus for Message Routing</a>.
+     */
+    public static final Symbol CAP_ANONYMOUS_RELAY = Symbol.valueOf("ANONYMOUS-RELAY");
 
     /**
      * The key that an authenticated client's principal is stored under in a {@code ProtonConnection}'s
@@ -119,6 +125,11 @@ public final class Constants {
      * The address that the ID of a connection that has been closed by a client is published to.
      */
     public static final String EVENT_BUS_ADDRESS_CONNECTION_CLOSED = "hono.connection.closed";
+
+    /**
+     * The vert.x event bus address that the ID of a tenant that timed out is published to.
+     */
+    public static final String EVENT_BUS_ADDRESS_TENANT_TIMED_OUT = "tenant.timeout";
 
     /**
      * The AMQP 1.0 port defined by IANA for unencrypted connections.
@@ -208,20 +219,22 @@ public final class Constants {
      * events.
      */
     public static final String HEADER_TIME_TILL_DISCONNECT = "hono-ttd";
-
     /**
-     * The header name defined for setting the <em>time to deliver</em> for device command readiness notification events.
-     * @deprecated Use {@link #HEADER_TIME_TILL_DISCONNECT} instead
+     * The header name defined for setting the <em>time-to-live</em> for the event messages.
      */
-    @Deprecated
-    public static final String HEADER_TIME_TIL_DISCONNECT = HEADER_TIME_TILL_DISCONNECT;
-
+    public static final String HEADER_TIME_TO_LIVE = "hono-ttl";
     /**
      * The header name defined for setting the <em>request id</em> for device responses to a command.
      * This id is sent to the device and has to be used in replies to the command to correlate the original command with
      * the response.
      */
     public static final String HEADER_COMMAND_REQUEST_ID = "hono-cmd-req-id";
+
+    /**
+     * The header name defined for setting the <em>target device id</em> when sending a command to a gateway acting on
+     * behalf of the device.
+     */
+    public static final String HEADER_COMMAND_TARGET_DEVICE = "hono-cmd-target-device";
 
     /**
      * The header name defined for setting the <em>command</em> that is sent to the device.

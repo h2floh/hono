@@ -13,8 +13,7 @@
 
 package org.eclipse.hono.tests.http;
 
-import static org.eclipse.hono.tests.http.HttpProtocolException.assertProtocolError;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
@@ -23,12 +22,14 @@ import java.security.KeyPair;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import javax.security.auth.x500.X500Principal;
 
@@ -38,22 +39,21 @@ import org.eclipse.hono.client.ServiceInvocationException;
 import org.eclipse.hono.service.management.device.Device;
 import org.eclipse.hono.service.management.tenant.Adapter;
 import org.eclipse.hono.service.management.tenant.Tenant;
-import org.eclipse.hono.service.management.tenant.TrustedCertificateAuthority;
+import org.eclipse.hono.tests.CommandEndpointConfiguration.SubscriberRole;
 import org.eclipse.hono.tests.CrudHttpClient;
 import org.eclipse.hono.tests.IntegrationTestSupport;
 import org.eclipse.hono.tests.Tenants;
-import org.eclipse.hono.util.CommandConstants;
 import org.eclipse.hono.util.Constants;
 import org.eclipse.hono.util.MessageHelper;
 import org.eclipse.hono.util.TimeUntilDisconnectNotification;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,8 +67,9 @@ import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.PemTrustOptions;
 import io.vertx.core.net.SelfSignedCertificate;
-import io.vertx.ext.unit.Async;
-import io.vertx.ext.unit.TestContext;
+import io.vertx.junit5.Checkpoint;
+import io.vertx.junit5.Timeout;
+import io.vertx.junit5.VertxTestContext;
 
 /**
  * Base class for HTTP adapter integration tests.
@@ -103,17 +104,6 @@ public abstract class HttpTestBase {
      * The default options to use for creating HTTP clients.
      */
     private static HttpClientOptions defaultOptions;
-
-    /**
-     * Time out each test after 20 seconds.
-     */
-    @Rule
-    public final Timeout timeout = Timeout.millis(TEST_TIMEOUT_MILLIS);
-    /**
-     * Provide test name to unit tests.
-     */
-    @Rule
-    public final TestName testName = new TestName();
 
     /**
      * A logger to be shared with subclasses.
@@ -153,28 +143,30 @@ public abstract class HttpTestBase {
      * 
      * @param ctx The vert.x test context.
      */
-    @BeforeClass
-    public static void init(final TestContext ctx) {
-
-        helper = new IntegrationTestSupport(VERTX);
-        helper.init(ctx);
+    @BeforeAll
+    public static void init(final VertxTestContext ctx) {
 
         defaultOptions = new HttpClientOptions()
-           .setDefaultHost(IntegrationTestSupport.HTTP_HOST)
-           .setDefaultPort(IntegrationTestSupport.HTTPS_PORT)
-           .setTrustOptions(new PemTrustOptions().addCertPath(IntegrationTestSupport.TRUST_STORE_PATH))
-           .setVerifyHost(false)
-           .setSsl(true);
+                .setDefaultHost(IntegrationTestSupport.HTTP_HOST)
+                .setDefaultPort(IntegrationTestSupport.HTTPS_PORT)
+                .setTrustOptions(new PemTrustOptions().addCertPath(IntegrationTestSupport.TRUST_STORE_PATH))
+                .setVerifyHost(false)
+                .setSsl(true);
+
+        helper = new IntegrationTestSupport(VERTX);
+        helper.init().setHandler(ctx.completing());
     }
 
     /**
      * Sets up the fixture.
+     * 
+     * @param testInfo Meta info about the test being run.
      */
-    @Before
-    public void setUp() {
+    @BeforeEach
+    public void setUp(final TestInfo testInfo) {
 
         testStartTimeMillis = System.currentTimeMillis();
-        logger.info("running {}", testName.getMethodName());
+        logger.info("running {}", testInfo.getDisplayName());
         logger.info("using HTTP adapter [host: {}, http port: {}, https port: {}]",
                 IntegrationTestSupport.HTTP_HOST,
                 IntegrationTestSupport.HTTP_PORT,
@@ -196,8 +188,8 @@ public abstract class HttpTestBase {
      * 
      * @param ctx The vert.x context.
      */
-    @After
-    public void deleteObjects(final TestContext ctx) {
+    @AfterEach
+    public void deleteObjects(final VertxTestContext ctx) {
 
         helper.deleteObjects(ctx);
         if (deviceCert != null) {
@@ -210,10 +202,31 @@ public abstract class HttpTestBase {
      * 
      * @param ctx The vert.x test context.
      */
-    @AfterClass
-    public static void disconnect(final TestContext ctx) {
+    @AfterAll
+    public static void disconnect(final VertxTestContext ctx) {
 
-        helper.disconnect(ctx);
+        helper.disconnect().setHandler(ctx.completing());
+    }
+
+    /**
+     * Creates the endpoint configuration variants for Command &amp; Control scenarios.
+     * 
+     * @return The configurations.
+     */
+    static Stream<HttpCommandEndpointConfiguration> commandAndControlVariants() {
+        return Stream.of(
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, false, true),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, true, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.DEVICE, true, true),
+
+                // gateway devices are supported with north bound "command" endpoint only
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_ALL_DEVICES, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_ALL_DEVICES, true, false),
+
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_SINGLE_DEVICE, false, false),
+                new HttpCommandEndpointConfiguration(SubscriberRole.GATEWAY_FOR_SINGLE_DEVICE, true, false)
+                );
     }
 
     /**
@@ -240,26 +253,24 @@ public abstract class HttpTestBase {
      * @throws InterruptedException if the test fails.
      */
     @Test
-    public void testUploadMessagesUsingBasicAuth(final TestContext ctx) throws InterruptedException {
+    public void testUploadMessagesUsingBasicAuth(final VertxTestContext ctx) throws InterruptedException {
 
-        final Async setup = ctx.async();
+        final VertxTestContext setup = new VertxTestContext();
         final Tenant tenant = new Tenant();
         final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
                 .add(HttpHeaders.AUTHORIZATION, authorization)
                 .add(HttpHeaders.ORIGIN, ORIGIN_URI);
 
-        final AtomicReference<Throwable> setupError = new AtomicReference<>();
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
-                .setHandler(r -> {
-                    setupError.set(r.cause());
-                    setup.complete();
-                    ctx.<MultiMap> asyncAssertSuccess().handle(r);
-                });
+        .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
+        .setHandler(setup.completing());
 
-        setup.await();
-        assertNull(setupError.get());
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
 
         testUploadMessages(ctx, tenantId,
                 count -> {
@@ -280,7 +291,7 @@ public abstract class HttpTestBase {
      * @throws InterruptedException if the test fails.
      */
     @Test
-    public void testUploadMessagesViaGateway(final TestContext ctx) throws InterruptedException {
+    public void testUploadMessagesViaGateway(final VertxTestContext ctx) throws InterruptedException {
 
         // GIVEN a device that is connected via two gateways
         final Tenant tenant = new Tenant();
@@ -289,12 +300,17 @@ public abstract class HttpTestBase {
         final Device device = new Device();
         device.setVia(Arrays.asList(gatewayOneId, gatewayTwoId));
 
-        final Async setup = ctx.async();
+        final VertxTestContext setup = new VertxTestContext();
         helper.registry.addDeviceForTenant(tenantId, tenant, gatewayOneId, PWD)
-                .compose(ok -> helper.registry.addDeviceToTenant(tenantId, gatewayTwoId, PWD))
-                .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, device))
-                .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        .compose(ok -> helper.registry.addDeviceToTenant(tenantId, gatewayTwoId, PWD))
+        .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, device))
+        .setHandler(setup.completing());
+
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
 
         final MultiMap requestHeadersOne = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
@@ -329,23 +345,27 @@ public abstract class HttpTestBase {
      * @throws InterruptedException if the test fails.
      */
     @Test
-    public void testUploadMessagesUsingClientCertificate(final TestContext ctx) throws InterruptedException {
+    public void testUploadMessagesUsingClientCertificate(final VertxTestContext ctx) throws InterruptedException {
 
-        final Async setup = ctx.async();
+        final VertxTestContext setup = new VertxTestContext();
         final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
                 .add(HttpHeaders.ORIGIN, ORIGIN_URI);
 
         helper.getCertificate(deviceCert.certificatePath())
-                .compose(cert -> {
+       .compose(cert -> {
 
-                    final var tenant = Tenants.createTenantForTrustAnchor(cert);
-                    return helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, cert);
+            final var tenant = Tenants.createTenantForTrustAnchor(cert);
+            return helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, cert);
 
-                })
-                .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
+        })
+        .setHandler(setup.completing());
 
-        setup.await();
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
 
         testUploadMessages(ctx, tenantId, count -> {
             return httpClientWithClientCert.create(
@@ -367,7 +387,7 @@ public abstract class HttpTestBase {
      *              has finished.
      */
     protected void testUploadMessages(
-            final TestContext ctx,
+            final VertxTestContext ctx,
             final String tenantId,
             final Function<Integer, Future<MultiMap>> requestSender) throws InterruptedException {
         testUploadMessages(ctx, tenantId, null, requestSender);
@@ -384,9 +404,9 @@ public abstract class HttpTestBase {
      *              has finished.
      */
     protected void testUploadMessages(
-            final TestContext ctx,
+            final VertxTestContext ctx,
             final String tenantId,
-            final Consumer<Message> messageConsumer,
+            final Function<Message, Future<?>> messageConsumer,
             final Function<Integer, Future<MultiMap>> requestSender) throws InterruptedException {
         testUploadMessages(ctx, tenantId, messageConsumer, requestSender, MESSAGES_TO_SEND);
     }
@@ -402,65 +422,86 @@ public abstract class HttpTestBase {
      * @throws InterruptedException if the test is interrupted before it has finished.
      */
     protected void testUploadMessages(
-            final TestContext ctx,
+            final VertxTestContext ctx,
             final String tenantId,
-            final Consumer<Message> messageConsumer,
+            final Function<Message, Future<?>> messageConsumer,
             final Function<Integer, Future<MultiMap>> requestSender,
             final int numberOfMessages) throws InterruptedException {
 
-        final CountDownLatch received = new CountDownLatch(numberOfMessages);
-        final Async setup = ctx.async();
+        final VertxTestContext messageSending = new VertxTestContext();
+        final Checkpoint messageSent = messageSending.checkpoint(numberOfMessages);
+        final Checkpoint messageReceived = messageSending.laxCheckpoint(numberOfMessages);
+        final AtomicInteger receivedMessageCount = new AtomicInteger(0);
+
+        final VertxTestContext setup = new VertxTestContext();
 
         createConsumer(tenantId, msg -> {
             logger.trace("received {}", msg);
             assertMessageProperties(ctx, msg);
-            if (messageConsumer != null) {
-                messageConsumer.accept(msg);
+            Optional.ofNullable(messageConsumer)
+            .map(consumer -> consumer.apply(msg))
+            .orElseGet(() -> Future.succeededFuture())
+            .setHandler(attempt -> {
+                if (attempt.succeeded()) {
+                    receivedMessageCount.incrementAndGet();
+                    messageReceived.flag();
+                } else {
+                    logger.error("failed to process message from device", attempt.cause());
+                    messageSending.failNow(attempt.cause());
+                }
+            });
+            if (receivedMessageCount.get() % 20 == 0) {
+                logger.info("messages received: {}", receivedMessageCount.get());
             }
-            received.countDown();
-            if (received.getCount() % 20 == 0) {
-                logger.info("messages received: {}", numberOfMessages - received.getCount());
-            }
-        }).setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
+        }).setHandler(setup.completing());
 
-        setup.await();
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
+
         final long start = System.currentTimeMillis();
         int messageCount = 0;
 
         while (messageCount < numberOfMessages) {
 
-            final int currentMessage = messageCount;
             messageCount++;
+            final int currentMessage = messageCount;
 
-            final Async sending = ctx.async();
-            requestSender.apply(currentMessage).compose(this::assertHttpResponse).setHandler(attempt -> {
+            final CountDownLatch sending = new CountDownLatch(1);
+            requestSender.apply(currentMessage)
+            .compose(this::assertHttpResponse)
+            .setHandler(attempt -> {
                 try {
                     if (attempt.succeeded()) {
                         logger.debug("sent message {}", currentMessage);
+                        messageSent.flag();
                     } else {
                         logger.info("failed to send message {}: {}", currentMessage, attempt.cause().getMessage());
-                        ctx.fail(attempt.cause());
+                        messageSending.failNow(attempt.cause());
                     }
                 } finally {
-                    sending.complete();
+                    sending.countDown();
                 }
             });
-
+            sending.await();
             if (currentMessage % 20 == 0) {
                 logger.info("messages sent: " + currentMessage);
             }
-            sending.await();
         }
 
         final long timeToWait = Math.max(TEST_TIMEOUT_MILLIS - 50 - (System.currentTimeMillis() - testStartTimeMillis),
                 1);
-        if (!received.await(timeToWait, TimeUnit.MILLISECONDS)) {
-            logger.info("sent {} and received {} messages after {} milliseconds",
-                    messageCount, numberOfMessages - received.getCount(), System.currentTimeMillis() - start);
-            ctx.fail("did not receive all messages sent");
+        assertThat(messageSending.awaitCompletion(timeToWait, TimeUnit.MILLISECONDS)).isTrue();
+
+        if (messageSending.failed()) {
+            logger.error("test execution failed", messageSending.causeOfFailure());
+            ctx.failNow(messageSending.causeOfFailure());
         } else {
-            logger.info("sent {} and received {} messages after {} milliseconds",
-                    messageCount, numberOfMessages - received.getCount(), System.currentTimeMillis() - start);
+            logger.info("successfully sent {} and received {} messages after {} milliseconds",
+                    messageCount, receivedMessageCount.get(), System.currentTimeMillis() - start);
+            ctx.completeNow();
         }
     }
 
@@ -472,45 +513,44 @@ public abstract class HttpTestBase {
      * @throws GeneralSecurityException if the tenant's trust anchor cannot be generated
      */
     @Test
-    public void testUploadFailsForNonMatchingTrustAnchor(final TestContext ctx) throws GeneralSecurityException {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testUploadFailsForNonMatchingTrustAnchor(final VertxTestContext ctx) throws GeneralSecurityException {
 
-        final Async setup = ctx.async();
-        final Tenant tenant = new Tenant();
-
-        final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                .add(HttpHeaders.ORIGIN, ORIGIN_URI);
 
         final KeyPair keyPair = helper.newEcKeyPair();
 
         // GIVEN a tenant configured with a trust anchor
         helper.getCertificate(deviceCert.certificatePath())
-                .compose(cert -> {
+        .compose(cert -> {
 
-                    final TrustedCertificateAuthority trustedCertificateAuthority = new TrustedCertificateAuthority()
-                            .setSubjectDn(cert.getIssuerX500Principal().getName(X500Principal.RFC2253))
-                            .setPublicKey(keyPair.getPublic().getEncoded())
-                            .setKeyAlgorithm(keyPair.getPublic().getAlgorithm());
-                    tenant.setTrustedCertificateAuthority(trustedCertificateAuthority);
+            final Tenant tenant = Tenants.createTenantForTrustAnchor(
+                    cert.getIssuerX500Principal().getName(X500Principal.RFC2253),
+                    keyPair.getPublic().getEncoded(),
+                    keyPair.getPublic().getAlgorithm());
 
-                    return helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, cert);
-                })
-                .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
-
+            return helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, cert);
+        })
         // WHEN a device tries to upload data and authenticate with a client
         // certificate that has not been signed with the configured trusted CA
-        httpClientWithClientCert.create(
-                getEndpointUri(),
-                Buffer.buffer("hello"),
-                requestHeaders,
-                response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
-                .setHandler(ctx.asyncAssertFailure(t -> {
-                    // THEN the request fails with a 401
-                    ctx.assertTrue(t instanceof ServiceInvocationException);
-                    ctx.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED,
-                            ((ServiceInvocationException) t).getErrorCode());
-                }));
+        .compose(ok -> {
+
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.ORIGIN, ORIGIN_URI);
+            return httpClientWithClientCert.create(
+                    getEndpointUri(),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED);
+        })
+        // THEN the request fails with a 401
+        .setHandler(ctx.failing(t -> {
+            ctx.verify(() -> {
+                assertThat(t).isInstanceOf(ServiceInvocationException.class);
+                assertThat(((ServiceInvocationException) t).getErrorCode()).isEqualTo(HttpURLConnection.HTTP_UNAUTHORIZED);
+            });
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -520,35 +560,37 @@ public abstract class HttpTestBase {
      * @param ctx The test context
      */
     @Test
-    public void testUploadMessageFailsForDisabledTenant(final TestContext ctx) {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testUploadMessageFailsForDisabledTenant(final VertxTestContext ctx) {
 
         // GIVEN a tenant for which the HTTP adapter is disabled
         final Tenant tenant = new Tenant();
         tenant.addAdapterConfig(new Adapter(Constants.PROTOCOL_ADAPTER_TYPE_HTTP).setEnabled(false));
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
-                .compose(ok -> {
+        .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
+        .compose(ok -> {
 
-                    // WHEN a device that belongs to the tenant uploads a message
-                    final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                            .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                            .add(HttpHeaders.AUTHORIZATION, authorization);
+            // WHEN a device that belongs to the tenant uploads a message
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.AUTHORIZATION, authorization);
 
-                    return httpClient.create(
-                            getEndpointUri(),
-                            Buffer.buffer("hello"),
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
-                            .recover(HttpProtocolException::transformInto);
+            return httpClient.create(
+                    getEndpointUri(),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
+                    .recover(HttpProtocolException::transformInto);
 
-                })
-                .setHandler(ctx.asyncAssertFailure(t -> {
+        })
+        .setHandler(ctx.failing(t -> {
 
-                    // THEN the message gets rejected by the HTTP adapter with a 403
-                    logger.info("could not publish message for disabled tenant [{}]", tenantId);
-                    assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t);
-                }));
+            // THEN the message gets rejected by the HTTP adapter with a 403
+            logger.info("could not publish message for disabled tenant [{}]", tenantId);
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -557,37 +599,38 @@ public abstract class HttpTestBase {
      * @param ctx The test context
      */
     @Test
-    public void testUploadMessageFailsForDisabledDevice(final TestContext ctx) {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testUploadMessageFailsForDisabledDevice(final VertxTestContext ctx) {
 
         // GIVEN a disabled device
         final Tenant tenant = new Tenant();
-        final Device device = new Device()
-                .setEnabled(Boolean.FALSE);
+        final Device device = new Device().setEnabled(Boolean.FALSE);
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, deviceId, device, PWD)
-                .compose(ok -> {
+        .addDeviceForTenant(tenantId, tenant, deviceId, device, PWD)
+        .compose(ok -> {
 
-                    // WHEN the device tries to upload a message
-                    final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                            .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                            .add(HttpHeaders.AUTHORIZATION, authorization);
+            // WHEN the device tries to upload a message
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.AUTHORIZATION, authorization);
 
-                    return httpClient.create(
-                            getEndpointUri(),
-                            Buffer.buffer("hello"),
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
-                            .recover(HttpProtocolException::transformInto);
+            return httpClient.create(
+                    getEndpointUri(),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
+                    .recover(HttpProtocolException::transformInto);
 
-                })
-                .setHandler(ctx.asyncAssertFailure(t -> {
+        })
+        .setHandler(ctx.failing(t -> {
 
-                    // THEN the message gets rejected by the HTTP adapter with a 404
-                    logger.info("could not publish message for disabled device [tenant-id: {}, device-id: {}]",
-                            tenantId, deviceId);
-                    assertProtocolError(HttpURLConnection.HTTP_NOT_FOUND, t);
-                }));
+            // THEN the message gets rejected by the HTTP adapter with a 404
+            logger.info("could not publish message for disabled device [tenant-id: {}, device-id: {}]",
+                    tenantId, deviceId);
+            ctx.verify(() ->  HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_NOT_FOUND, t));
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -596,42 +639,43 @@ public abstract class HttpTestBase {
      * @param ctx The test context
      */
     @Test
-    public void testUploadMessageFailsForDisabledGateway(final TestContext ctx) {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testUploadMessageFailsForDisabledGateway(final VertxTestContext ctx) {
 
         // GIVEN a device that is connected via a disabled gateway
         final Tenant tenant = new Tenant();
+
+        final Device gateway = new Device().setEnabled(Boolean.FALSE);
         final String gatewayId = helper.getRandomDeviceId(tenantId);
 
-        final Device gateway = new Device();
-        gateway.setEnabled(Boolean.FALSE);
-        final Device device = new Device();
-        device.setVia(Collections.singletonList(gatewayId));
+        final Device device = new Device().setVia(Collections.singletonList(gatewayId));
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, gatewayId, gateway, PWD)
-                .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, device))
-                .compose(ok -> {
+        .addDeviceForTenant(tenantId, tenant, gatewayId, gateway, PWD)
+        .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, device))
+        .compose(ok -> {
 
-                    // WHEN the gateway tries to upload a message for the device
-                    final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                            .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                            .add(HttpHeaders.AUTHORIZATION, getBasicAuth(tenantId, gatewayId, PWD));
+            // WHEN the gateway tries to upload a message for the device
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.AUTHORIZATION, getBasicAuth(tenantId, gatewayId, PWD));
 
-                    return httpClient.update(
-                            String.format("%s/%s/%s", getEndpointUri(), tenantId, deviceId),
-                            Buffer.buffer("hello"),
-                            requestHeaders,
-                            statusCode -> statusCode == HttpURLConnection.HTTP_ACCEPTED)
-                            .recover(HttpProtocolException::transformInto);
+            return httpClient.update(
+                    String.format("%s/%s/%s", getEndpointUri(), tenantId, deviceId),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    statusCode -> statusCode == HttpURLConnection.HTTP_ACCEPTED)
+                    .recover(HttpProtocolException::transformInto);
 
-                })
-                .setHandler(ctx.asyncAssertFailure(t -> {
+        })
+        .setHandler(ctx.failing(t -> {
 
-                    // THEN the message gets rejected by the HTTP adapter with a 403
-                    logger.info("could not publish message for disabled gateway [tenant-id: {}, gateway-id: {}]",
-                            tenantId, gatewayId);
-                    assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t);
-                }));
+            // THEN the message gets rejected by the HTTP adapter with a 403
+            logger.info("could not publish message for disabled gateway [tenant-id: {}, gateway-id: {}]",
+                    tenantId, gatewayId);
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -641,7 +685,8 @@ public abstract class HttpTestBase {
      * @param ctx The test context
      */
     @Test
-    public void testUploadMessageFailsForUnauthorizedGateway(final TestContext ctx) {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testUploadMessageFailsForUnauthorizedGateway(final VertxTestContext ctx) {
 
         // GIVEN a device that is connected via gateway "not-the-created-gateway"
         final Tenant tenant = new Tenant();
@@ -650,30 +695,31 @@ public abstract class HttpTestBase {
         deviceData.setVia(Collections.singletonList("not-the-created-gateway"));
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, gatewayId, PWD)
-                .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, deviceData))
-                .compose(ok -> {
+        .addDeviceForTenant(tenantId, tenant, gatewayId, PWD)
+        .compose(ok -> helper.registry.registerDevice(tenantId, deviceId, deviceData))
+        .compose(ok -> {
 
-                    // WHEN another gateway tries to upload a message for the device
-                    final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
-                            .add(HttpHeaders.CONTENT_TYPE, "text/plain")
-                            .add(HttpHeaders.AUTHORIZATION, getBasicAuth(tenantId, gatewayId, PWD));
+            // WHEN another gateway tries to upload a message for the device
+            final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
+                    .add(HttpHeaders.CONTENT_TYPE, "text/plain")
+                    .add(HttpHeaders.AUTHORIZATION, getBasicAuth(tenantId, gatewayId, PWD));
 
-                    return httpClient.update(
-                            String.format("%s/%s/%s", getEndpointUri(), tenantId, deviceId),
-                            Buffer.buffer("hello"),
-                            requestHeaders,
-                            statusCode -> statusCode == HttpURLConnection.HTTP_ACCEPTED)
-                            .recover(HttpProtocolException::transformInto);
+            return httpClient.update(
+                    String.format("%s/%s/%s", getEndpointUri(), tenantId, deviceId),
+                    Buffer.buffer("hello"),
+                    requestHeaders,
+                    statusCode -> statusCode == HttpURLConnection.HTTP_ACCEPTED)
+                    .recover(HttpProtocolException::transformInto);
 
-                })
-                .setHandler(ctx.asyncAssertFailure(t -> {
+        })
+        .setHandler(ctx.failing(t -> {
 
-                    // THEN the message gets rejected by the HTTP adapter with a 403
-                    logger.info("could not publish message for unauthorized gateway [tenant-id: {}, gateway-id: {}]",
-                            tenantId, gatewayId);
-                    assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t);
-                }));
+            // THEN the message gets rejected by the HTTP adapter with a 403
+            logger.info("could not publish message for unauthorized gateway [tenant-id: {}, gateway-id: {}]",
+                    tenantId, gatewayId);
+            ctx.verify(() -> HttpProtocolException.assertProtocolError(HttpURLConnection.HTTP_FORBIDDEN, t));
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -682,33 +728,38 @@ public abstract class HttpTestBase {
      * and which are sent before the command response to the initial request has been received.
      * 
      * @param ctx The test context.
+     * @throws InterruptedException if the test is interrupted before having completed.
      */
     @Test
-    public void testHandleConcurrentUploadWithTtd(final TestContext ctx) {
+    @Timeout(timeUnit = TimeUnit.SECONDS, value = 20)
+    public void testHandleConcurrentUploadWithTtd(final VertxTestContext ctx) throws InterruptedException {
 
         final Tenant tenant = new Tenant();
 
+        final CountDownLatch firstMessageReceived = new CountDownLatch(1);
+        final CountDownLatch secondMessageReceived = new CountDownLatch(1);
+
         // GIVEN a registered device
-        final Async setup = ctx.async();
-        final Async firstMessageReceived = ctx.async();
-        final Async secondMessageReceived = ctx.async();
+        final VertxTestContext setup = new VertxTestContext();
         helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, PWD)
         .compose(ok -> createConsumer(tenantId, msg -> {
             logger.trace("received message: {}", msg);
             TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
                 final Integer ttd = MessageHelper.getTimeUntilDisconnect(msg);
                 logger.debug("processing piggy backed message [ttd: {}]", ttd);
-                ctx.assertEquals(tenantId, notification.getTenantId());
-                ctx.assertEquals(deviceId, notification.getDeviceId());
+                ctx.verify(() -> {
+                    assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                    assertThat(notification.getDeviceId()).isEqualTo(deviceId);
+                });
             });
             switch(msg.getContentType()) {
             case "text/msg1":
                 logger.debug("received first message");
-                firstMessageReceived.complete();
+                firstMessageReceived.countDown();
                 break;
             case "text/msg2":
                 logger.debug("received second message");
-                secondMessageReceived.complete();
+                secondMessageReceived.countDown();
                 break;
             default:
                 // nothing to do
@@ -727,8 +778,13 @@ public abstract class HttpTestBase {
                     .add(HttpHeaders.ORIGIN, ORIGIN_URI)
                     .add(Constants.HEADER_QOS_LEVEL, "1"),
                 response -> response.statusCode() >= 200 && response.statusCode() < 300);
-        }).setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        }).setHandler(setup.completing());
+
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
 
         // WHEN the device sends a first upload request
         MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
@@ -769,20 +825,23 @@ public abstract class HttpTestBase {
         secondMessageReceived.await();
         // send command
         final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-        final Future<Void> commandSent = helper.sendOneWayCommand(tenantId, deviceId, COMMAND_TO_SEND, "application/json", inputData.toBuffer(), null, 3000);
+        final Future<Void> commandSent = helper.sendOneWayCommand(tenantId, deviceId, COMMAND_TO_SEND,
+                "application/json", inputData.toBuffer(),
+                IntegrationTestSupport.newCommandMessageProperties(() -> true), 3000);
         logger.info("sent one-way command to device");
 
         // THEN both requests succeed
-        CompositeFuture.all(commandSent, firstRequest, secondRequest).map(ok -> {
+        CompositeFuture.all(commandSent, firstRequest, secondRequest)
+        .setHandler(ctx.succeeding(ok -> {
+            ctx.verify(() -> {
+                // and the response to the first request contains a command
+                assertThat(firstRequest.result().get(Constants.HEADER_COMMAND)).isEqualTo(COMMAND_TO_SEND);
 
-            // and the response to the first request contains a command
-            ctx.assertEquals(COMMAND_TO_SEND, firstRequest.result().get(Constants.HEADER_COMMAND));
-
-            // while the response to the second request is empty
-            ctx.assertNull(secondRequest.result().get(Constants.HEADER_COMMAND));
-            return ok;
-
-        }).setHandler(ctx.asyncAssertSuccess());
+                // while the response to the second request is empty
+                assertThat(secondRequest.result().get(Constants.HEADER_COMMAND)).isNull();
+            });
+            ctx.completeNow();
+        }));
     }
 
     /**
@@ -793,9 +852,9 @@ public abstract class HttpTestBase {
      * @throws InterruptedException if the test fails.
      */
     @Test
-    public void testUploadMessagesWithTtdThatDoNotReplyWithCommand(final TestContext ctx) throws InterruptedException {
+    public void testUploadMessagesWithTtdThatDoNotReplyWithCommand(final VertxTestContext ctx) throws InterruptedException {
 
-        final Async setup = ctx.async();
+        final VertxTestContext setup = new VertxTestContext();
         final Tenant tenant = new Tenant();
         final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
@@ -803,30 +862,42 @@ public abstract class HttpTestBase {
                 .add(HttpHeaders.ORIGIN, ORIGIN_URI)
                 .add(Constants.HEADER_TIME_TILL_DISCONNECT, "2");
 
-        helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, PWD).setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        helper.registry.addDeviceForTenant(tenantId, tenant, deviceId, PWD).setHandler(setup.completing());
+
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
 
         testUploadMessages(ctx, tenantId,
                 msg -> {
-                    logger.trace("received message");
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
-                        ctx.assertEquals(2, notification.getTtd());
-                        ctx.assertEquals(tenantId, notification.getTenantId());
-                        ctx.assertEquals(deviceId, notification.getDeviceId());
-                    });
                     // do NOT send a command, but let the HTTP adapter's timer expire
+                    logger.trace("received message");
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                    .map(notification -> {
+                        ctx.verify(() -> {
+                            assertThat(notification.getTtd()).isEqualTo(2);
+                            assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                            assertThat(notification.getDeviceId()).isEqualTo(deviceId);
+                        });
+                        return Future.succeededFuture();
+                    })
+                    .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
                     return httpClient.create(
                             getEndpointUri(),
                             Buffer.buffer("hello " + count),
                             requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED).map(responseHeaders -> {
-
-                                // assert that the response does not contain a command nor a request ID nor a payload
-                                ctx.assertNull(responseHeaders.get(Constants.HEADER_COMMAND));
-                                ctx.assertNull(responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID));
-                                ctx.assertEquals(responseHeaders.get(HttpHeaders.CONTENT_LENGTH), "0");
+                            response -> response.statusCode() == HttpURLConnection.HTTP_ACCEPTED)
+                            .map(responseHeaders -> {
+                                ctx.verify(() -> {
+                                    // assert that the response does not contain a command nor a request ID nor a payload
+                                    assertThat(responseHeaders.get(Constants.HEADER_COMMAND)).isNull();
+                                    assertThat(responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID)).isNull();
+                                    assertThat(responseHeaders.get(HttpHeaders.CONTENT_LENGTH)).isEqualTo("0");
+                                });
                                 return responseHeaders;
                             });
                 },
@@ -837,14 +908,18 @@ public abstract class HttpTestBase {
      * Verifies that the HTTP adapter delivers a command to a device and accepts the corresponding
      * response from the device.
      * 
+     * @param endpointConfig The endpoints to use for sending/receiving commands.
      * @param ctx The test context.
      * @throws InterruptedException if the test fails.
      */
-    @Test
-    public void testUploadMessagesWithTtdThatReplyWithCommand(final TestContext ctx) throws InterruptedException {
+    @ParameterizedTest(name = IntegrationTestSupport.PARAMETERIZED_TEST_NAME_PATTERN)
+    @MethodSource("commandAndControlVariants")
+    public void testUploadMessagesWithTtdThatReplyWithCommand(
+            final HttpCommandEndpointConfiguration endpointConfig,
+            final VertxTestContext ctx) throws InterruptedException {
 
-        final Async setup = ctx.async();
         final Tenant tenant = new Tenant();
+        final VertxTestContext setup = new VertxTestContext();
 
         final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
@@ -859,47 +934,77 @@ public abstract class HttpTestBase {
                 .add(Constants.HEADER_COMMAND_RESPONSE_STATUS, "200");
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
-                .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
+        .setHandler(setup.completing());
 
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
+
+        final String commandTargetDeviceId = endpointConfig.isSubscribeAsGateway()
+                ? helper.setupGatewayDeviceBlocking(tenantId, deviceId, 5)
+                : deviceId;
+        final String subscribingDeviceId = endpointConfig.isSubscribeAsGatewayForSingleDevice() ? commandTargetDeviceId
+                : deviceId;
+
+        final AtomicInteger counter = new AtomicInteger();
         testUploadMessages(ctx, tenantId,
                 msg -> {
 
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
-                        logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
-                        ctx.assertEquals(tenantId, notification.getTenantId());
-                        ctx.assertEquals(deviceId, notification.getDeviceId());
-                        // now ready to send a command
-                        final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-                        helper
-                            .sendCommand(notification, COMMAND_TO_SEND, "application/json", inputData.toBuffer(), null)
-                            .setHandler(ctx.asyncAssertSuccess(response -> {
-                                ctx.assertEquals("text/plain", response.getContentType());
-                                ctx.assertEquals(deviceId, response.getApplicationProperty(MessageHelper.APP_PROPERTY_DEVICE_ID, String.class));
-                                ctx.assertEquals(tenantId, response.getApplicationProperty(MessageHelper.APP_PROPERTY_TENANT_ID, String.class));
-                            }));
-                    });
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                            .map(notification -> {
+                                logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
+                                ctx.verify(() -> {
+                                    assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                                    assertThat(notification.getDeviceId()).isEqualTo(subscribingDeviceId);
+                                });
+                                // now ready to send a command
+                                final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
+                                return helper.sendCommand(
+                                        tenantId,
+                                        commandTargetDeviceId,
+                                        COMMAND_TO_SEND,
+                                        "application/json",
+                                        inputData.toBuffer(),
+                                        // set "forceCommandRerouting" message property so that half the command are rerouted via the AMQP network
+                                        IntegrationTestSupport.newCommandMessageProperties(() -> counter.getAndIncrement() >= MESSAGES_TO_SEND/2),
+                                        notification.getMillisecondsUntilExpiry(),
+                                        endpointConfig.isLegacyNorthboundEndpoint())
+                                        .map(response -> {
+                                            ctx.verify(() -> {
+                                                assertThat(response.getContentType()).isEqualTo("text/plain");
+                                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_DEVICE_ID, String.class)).isEqualTo(deviceId);
+                                                assertThat(response.getApplicationProperty(MessageHelper.APP_PROPERTY_TENANT_ID, String.class)).isEqualTo(tenantId);
+                                            });
+                                            return response;
+                                        });
+                            })
+                            .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
-                    return httpClient.create(
-                            getEndpointUri(),
-                            Buffer.buffer("hello " + count),
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_OK).map(responseHeaders -> {
+                    final Buffer buffer = Buffer.buffer("hello " + count);
+                    return sendHttpRequestForGatewayOrDevice(buffer, requestHeaders, endpointConfig, commandTargetDeviceId)
+                            .map(responseHeaders -> {
 
-                                // assert that the response contains a command
-                                ctx.assertEquals(COMMAND_TO_SEND, responseHeaders.get(Constants.HEADER_COMMAND));
-                                ctx.assertEquals("application/json", responseHeaders.get(HttpHeaders.CONTENT_TYPE));
                                 final String requestId = responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID);
-                                ctx.assertNotNull(requestId);
-                                ctx.assertNotEquals(responseHeaders.get(HttpHeaders.CONTENT_LENGTH), "0");
+
+                                ctx.verify(() -> {
+                                    // assert that the response contains a command
+                                    assertThat(responseHeaders.get(Constants.HEADER_COMMAND))
+                                            .as("response #" + count + " doesn't contain command").isNotNull();
+                                    assertThat(responseHeaders.get(Constants.HEADER_COMMAND)).isEqualTo(COMMAND_TO_SEND);
+                                    assertThat(responseHeaders.get(HttpHeaders.CONTENT_TYPE)).isEqualTo("application/json");
+                                    assertThat(requestId).isNotNull();
+                                    assertThat(responseHeaders.get(HttpHeaders.CONTENT_LENGTH)).isNotEqualTo("0");
+                                });
                                 return requestId;
 
                             }).compose(receivedCommandRequestId -> {
 
                                 // send a response to the command now
-                                final String responseUri = getCommandResponseUri(receivedCommandRequestId);
+                                final String responseUri = endpointConfig.getCommandResponseUri(receivedCommandRequestId);
 
                                 logger.debug("posting response to command [uri: {}]", responseUri);
 
@@ -916,47 +1021,70 @@ public abstract class HttpTestBase {
      * Verifies that the HTTP adapter delivers a command to a device and accepts the corresponding
      * response from the device.
      * 
+     * @param endpointConfig The endpoints to use for sending/receiving commands.
      * @param ctx The test context.
      * @throws InterruptedException if the test fails.
      */
-    @Test
-    public void testUploadMessagesWithTtdThatReplyWithOneWayCommand(final TestContext ctx) throws InterruptedException {
+    @ParameterizedTest(name = IntegrationTestSupport.PARAMETERIZED_TEST_NAME_PATTERN)
+    @MethodSource("commandAndControlVariants")
+    public void testUploadMessagesWithTtdThatReplyWithOneWayCommand(
+            final HttpCommandEndpointConfiguration endpointConfig,
+            final VertxTestContext ctx) throws InterruptedException {
 
-        final Async setup = ctx.async();
         final Tenant tenant = new Tenant();
+        final VertxTestContext setup = new VertxTestContext();
 
         final MultiMap requestHeaders = MultiMap.caseInsensitiveMultiMap()
                 .add(HttpHeaders.CONTENT_TYPE, "text/plain")
                 .add(HttpHeaders.AUTHORIZATION, authorization)
                 .add(HttpHeaders.ORIGIN, ORIGIN_URI)
-                .add(Constants.HEADER_TIME_TILL_DISCONNECT, "2");
+                .add(Constants.HEADER_TIME_TILL_DISCONNECT, "4");
 
         helper.registry
-                .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
-                .setHandler(ctx.asyncAssertSuccess(ok -> setup.complete()));
-        setup.await();
+        .addDeviceForTenant(tenantId, tenant, deviceId, PWD)
+        .setHandler(setup.completing());
 
+        assertThat(setup.awaitCompletion(5, TimeUnit.SECONDS)).isTrue();
+        if (setup.failed()) {
+            ctx.failNow(setup.causeOfFailure());
+            return;
+        }
+
+        final String commandTargetDeviceId = endpointConfig.isSubscribeAsGateway()
+                ? helper.setupGatewayDeviceBlocking(tenantId, deviceId, 5)
+                : deviceId;
+        final String subscribingDeviceId = endpointConfig.isSubscribeAsGatewayForSingleDevice() ? commandTargetDeviceId
+                : deviceId;
+
+        final AtomicInteger counter = new AtomicInteger();
         testUploadMessages(ctx, tenantId,
                 msg -> {
-                    TimeUntilDisconnectNotification.fromMessage(msg).ifPresent(notification -> {
+                    return TimeUntilDisconnectNotification.fromMessage(msg)
+                            .map(notification -> {
 
-                        logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
-                        ctx.assertEquals(tenantId, notification.getTenantId());
-                        ctx.assertEquals(deviceId, notification.getDeviceId());
-                        // now ready to send a command
-                        final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
-                        helper
-                            .sendOneWayCommand(notification, COMMAND_TO_SEND, "application/json", inputData.toBuffer(), null)
-                            .setHandler(ctx.asyncAssertSuccess());
-                    });
+                                logger.trace("received piggy backed message [ttd: {}]: {}", notification.getTtd(), msg);
+                                ctx.verify(() -> {
+                                    assertThat(notification.getTenantId()).isEqualTo(tenantId);
+                                    assertThat(notification.getDeviceId()).isEqualTo(subscribingDeviceId);
+                                });
+                                // now ready to send a command
+                                final JsonObject inputData = new JsonObject().put(COMMAND_JSON_KEY, (int) (Math.random() * 100));
+                                return helper.sendOneWayCommand(
+                                        tenantId,
+                                        commandTargetDeviceId,
+                                        COMMAND_TO_SEND,
+                                        "application/json",
+                                        inputData.toBuffer(),
+                                        // set "forceCommandRerouting" message property so that half the command are rerouted via the AMQP network
+                                        IntegrationTestSupport.newCommandMessageProperties(() -> counter.getAndIncrement() >= MESSAGES_TO_SEND/2),
+                                        notification.getMillisecondsUntilExpiry(),
+                                        endpointConfig.isLegacyNorthboundEndpoint());
+                            })
+                            .orElseGet(() -> Future.succeededFuture());
                 },
                 count -> {
                     final Buffer payload = Buffer.buffer("hello " + count);
-                    return httpClient.create(
-                            getEndpointUri(),
-                            payload,
-                            requestHeaders,
-                            response -> response.statusCode() == HttpURLConnection.HTTP_OK)
+                    return sendHttpRequestForGatewayOrDevice(payload, requestHeaders, endpointConfig, commandTargetDeviceId)
                     .recover(t -> {
 
                         // we probably sent the request before the
@@ -964,53 +1092,48 @@ public abstract class HttpTestBase {
                         // consumer for the previous request
                         // wait a little and try again
                         final Future<MultiMap> retryResult = Future.future();
-                        VERTX.setTimer(100, retry -> {
-                            logger.info("re-trying last request [{}]", count);
-                            httpClient.create(
-                                    getEndpointUri(),
-                                    payload,
-                                    requestHeaders,
-                                    response -> response.statusCode() == HttpURLConnection.HTTP_OK)
+                        VERTX.setTimer(300, retry -> {
+                            logger.info("re-trying request [{}] which failed with unexpected status code {}",
+                                    count, ServiceInvocationException.extractStatusCode(t));
+                            sendHttpRequestForGatewayOrDevice(payload, requestHeaders, endpointConfig, commandTargetDeviceId)
                             .setHandler(retryResult);
                         });
                         return retryResult;
                     })
                     .map(responseHeaders -> {
-                        // assert that the response contains a one-way command
-                        ctx.assertEquals(COMMAND_TO_SEND, responseHeaders.get(Constants.HEADER_COMMAND));
-                        ctx.assertEquals("application/json", responseHeaders.get(HttpHeaders.CONTENT_TYPE));
-                        ctx.assertNull(responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID));
+                        ctx.verify(() -> {
+                            // assert that the response contains a one-way command
+                            assertThat(responseHeaders.get(Constants.HEADER_COMMAND))
+                                    .as("response #" + count + " doesn't contain command").isNotNull();
+                            assertThat(responseHeaders.get(Constants.HEADER_COMMAND)).isEqualTo(COMMAND_TO_SEND);
+                            assertThat(responseHeaders.get(HttpHeaders.CONTENT_TYPE)).isEqualTo("application/json");
+                            assertThat(responseHeaders.get(Constants.HEADER_COMMAND_REQUEST_ID)).isNull();
+                        });
                         return responseHeaders;
                     });
                 });
     }
 
-    private String getCommandResponseUri(final String commandRequestId) {
-        return String.format("/%s/res/%s", getCommandEndpoint(), commandRequestId);
+    private Future<MultiMap> sendHttpRequestForGatewayOrDevice(final Buffer payload, final MultiMap requestHeaders,
+            final HttpCommandEndpointConfiguration endpointConfig, final String requestDeviceId) {
+        if (endpointConfig.isSubscribeAsGatewayForSingleDevice()) {
+            final String uri = getEndpointUri() + "/" + tenantId + "/" + requestDeviceId;
+            // GW uses PUT when acting on behalf of a device
+            return httpClient.update(uri, payload, requestHeaders, status -> status == HttpURLConnection.HTTP_OK);
+        } else {
+            return httpClient.create(getEndpointUri(), payload, requestHeaders,
+                    response -> response.statusCode() == HttpURLConnection.HTTP_OK);
+        }
     }
 
-    /**
-     * Checks whether the legacy Command & Control endpoint shall be used.
-     * <p>
-     * Returns {@code false} by default. Subclasses may return {@code true} here to perform tests using the legacy
-     * command endpoint.
-     *
-     * @return {@code true} if the legacy command endpoint shall be used.
-     */
-    protected boolean useLegacyCommandEndpoint() {
-        return false;
-    }
-
-    private String getCommandEndpoint() {
-        return useLegacyCommandEndpoint() ? CommandConstants.COMMAND_LEGACY_ENDPOINT : CommandConstants.COMMAND_ENDPOINT;
-    }
-
-    private void assertMessageProperties(final TestContext ctx, final Message msg) {
-        ctx.assertNotNull(MessageHelper.getDeviceId(msg));
-        ctx.assertNotNull(MessageHelper.getTenantIdAnnotation(msg));
-        ctx.assertNotNull(MessageHelper.getDeviceIdAnnotation(msg));
-        ctx.assertNull(MessageHelper.getRegistrationAssertion(msg));
-        assertAdditionalMessageProperties(ctx, msg);
+    private void assertMessageProperties(final VertxTestContext ctx, final Message msg) {
+        ctx.verify(() -> {
+            assertThat(MessageHelper.getDeviceId(msg)).isNotNull();
+            assertThat(MessageHelper.getTenantIdAnnotation(msg)).isNotNull();
+            assertThat(MessageHelper.getDeviceIdAnnotation(msg)).isNotNull();
+            assertThat(MessageHelper.getRegistrationAssertion(msg)).isNull();
+            assertAdditionalMessageProperties(msg);
+        });
     }
 
     private boolean hasAccessControlExposedHeaders(final MultiMap responseHeaders) {
@@ -1026,10 +1149,9 @@ public abstract class HttpTestBase {
      * This default implementation does nothing. Subclasses should override this method to implement
      * reasonable checks.
      * 
-     * @param ctx The test context.
      * @param msg The message to perform checks on.
      */
-    protected void assertAdditionalMessageProperties(final TestContext ctx, final Message msg) {
+    protected void assertAdditionalMessageProperties(final Message msg) {
         // empty
     }
 
@@ -1060,8 +1182,7 @@ public abstract class HttpTestBase {
 
         final StringBuilder result = new StringBuilder("Basic ");
         final String username = IntegrationTestSupport.getUsername(deviceId, tenant);
-        result.append(Base64.getEncoder().encodeToString(new StringBuilder(username).append(":").append(password)
-                .toString().getBytes(StandardCharsets.UTF_8)));
+        result.append(Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8)));
         return result.toString();
     }
 

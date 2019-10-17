@@ -14,6 +14,7 @@
 package org.eclipse.hono.adapter.mqtt;
 
 import java.net.HttpURLConnection;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -69,6 +70,7 @@ import io.opentracing.tag.Tags;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mqtt.MqttConnectionException;
@@ -100,6 +102,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
 
     private static final int IANA_MQTT_PORT = 1883;
     private static final int IANA_SECURE_MQTT_PORT = 8883;
+    private static final String KEY_TOPIC_FILTER = "filter";
 
     private MqttAdapterMetrics metrics = MqttAdapterMetrics.NOOP;
 
@@ -290,11 +293,11 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 .listen(done -> {
 
                     if (done.succeeded()) {
-                        LOG.info("MQTT server running on {}:{}", getConfig().getBindAddress(),
+                        log.info("MQTT server running on {}:{}", getConfig().getBindAddress(),
                                 createdMqttServer.actualPort());
                         result.complete(createdMqttServer);
                     } else {
-                        LOG.error("error while starting up MQTT server", done.cause());
+                        log.error("error while starting up MQTT server", done.cause());
                         result.fail(done.cause());
                     }
                 });
@@ -304,9 +307,9 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
     @Override
     public void doStart(final Future<Void> startFuture) {
 
-        LOG.info("limiting size of inbound message payload to {} bytes", getConfig().getMaxPayloadSize());
+        log.info("limiting size of inbound message payload to {} bytes", getConfig().getMaxPayloadSize());
         if (!getConfig().isAuthenticationRequired()) {
-            LOG.warn("authentication of devices turned off");
+            log.warn("authentication of devices turned off");
         }
 
         final ConnectionLimitManager connectionLimitManager = Optional.ofNullable(
@@ -363,7 +366,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
      */
     final void handleEndpointConnection(final MqttEndpoint endpoint) {
 
-        LOG.debug("connection request from client [client-id: {}]", endpoint.clientIdentifier());
+        log.debug("connection request from client [client-id: {}]", endpoint.clientIdentifier());
         final Span span = tracer.buildSpan("CONNECT")
                 .ignoreActiveSpan()
                 .withTag(Tags.SPAN_KIND.getKey(), Tags.SPAN_KIND_SERVER)
@@ -420,7 +423,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                             }
                             currentSpan.log("connection accepted");
                         } else {
-                            LOG.warn(
+                            log.warn(
                                     "connection request from client [clientId: {}] rejected due to connection event "
                                             + "failure: {}",
                                     endpoint.clientIdentifier(),
@@ -435,7 +438,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
 
             final Throwable t = authenticationAttempt.cause();
             TracingHelper.TAG_AUTHENTICATED.set(currentSpan, false);
-            LOG.debug("connection request from client [clientId: {}] rejected due to {} ",
+            log.debug("connection request from client [clientId: {}] rejected due to {} ",
                     endpoint.clientIdentifier(), t.getMessage());
 
             final MqttConnectReturnCode code = getConnectReturnCode(t);
@@ -459,7 +462,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
      */
     private Future<Device> handleEndpointConnectionWithoutAuthentication(final MqttEndpoint endpoint) {
         registerHandlers(endpoint, null, OptionalInt.empty());
-        LOG.debug("unauthenticated device [clientId: {}] connected", endpoint.clientIdentifier());
+        log.debug("unauthenticated device [clientId: {}] connected", endpoint.clientIdentifier());
         return Future.succeededFuture();
     }
 
@@ -470,7 +473,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
         final Future<OptionalInt> traceSamplingPriority = applyTenantTraceSamplingPriority(context, currentSpan);
         final Future<DeviceUser> authAttempt = traceSamplingPriority.compose(v -> {
             context.setTracingContext(currentSpan.context());
-            return authenticate(context, currentSpan);
+            return authenticate(context);
         });
         return authAttempt
                 .compose(authenticatedDevice -> CompositeFuture.all(
@@ -484,9 +487,9 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 .compose(authenticatedDevice -> registerHandlers(endpoint, authenticatedDevice, traceSamplingPriority.result()))
                 .recover(t -> {
                     if (authAttempt.failed()) {
-                        LOG.debug("could not authenticate device", t);
+                        log.debug("could not authenticate device", t);
                     } else {
-                        LOG.debug("cannot establish connection with device [tenant-id: {}, device-id: {}]",
+                        log.debug("cannot establish connection with device [tenant-id: {}, device-id: {}]",
                                 authAttempt.result().getTenantId(), authAttempt.result().getDeviceId(), t);
                     }
                     return Future.failedFuture(t);
@@ -513,7 +516,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 });
     }
 
-    private Future<DeviceUser> authenticate(final MqttContext connectContext, final Span currentSpan) {
+    private Future<DeviceUser> authenticate(final MqttContext connectContext) {
 
         return authHandler.authenticateDevice(connectContext);
     }
@@ -577,7 +580,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                         endpoint.clientIdentifier());
                 if (cmdSub == null) {
                     span.log(String.format("ignoring unsupported topic filter [%s]", subscription.topicName()));
-                    LOG.debug("cannot create subscription [filter: {}, requested QoS: {}]: unsupported topic filter",
+                    log.debug("cannot create subscription [filter: {}, requested QoS: {}]: unsupported topic filter",
                             subscription.topicName(), subscription.qualityOfService());
                     result = Future.failedFuture(new IllegalArgumentException("unsupported topic filter"));
                 } else if (MqttQoS.EXACTLY_ONCE.equals(subscription.qualityOfService())) {
@@ -587,11 +590,11 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                     result = createCommandConsumer(endpoint, cmdSub, cmdHandler).map(consumer -> {
                         final Map<String, Object> items = new HashMap<>(4);
                         items.put(Fields.EVENT, "accepting subscription");
-                        items.put("filter", subscription.topicName());
+                        items.put(KEY_TOPIC_FILTER, subscription.topicName());
                         items.put("requested QoS", subscription.qualityOfService());
                         items.put("granted QoS", subscription.qualityOfService());
                         span.log(items);
-                        LOG.debug("created subscription [tenant: {}, device: {}, filter: {}, requested QoS: {}, granted QoS: {}]",
+                        log.debug("created subscription [tenant: {}, device: {}, filter: {}, requested QoS: {}, granted QoS: {}]",
                                 cmdSub.getTenant(), cmdSub.getDeviceId(), subscription.topicName(),
                                 subscription.qualityOfService(), subscription.qualityOfService());
                         cmdHandler.addSubscription(cmdSub, consumer);
@@ -599,11 +602,11 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                     }).recover(t -> {
                         final Map<String, Object> items = new HashMap<>(4);
                         items.put(Fields.EVENT, Tags.ERROR.getKey());
-                        items.put("filter", subscription.topicName());
+                        items.put(KEY_TOPIC_FILTER, subscription.topicName());
                         items.put("requested QoS", subscription.qualityOfService());
                         items.put(Fields.MESSAGE, "rejecting subscription: " + t.getMessage());
                         TracingHelper.logError(span, items);
-                        LOG.debug("cannot create subscription [tenant: {}, device: {}, filter: {}, requested QoS: {}]",
+                        log.debug("cannot create subscription [tenant: {}, device: {}, filter: {}, requested QoS: {}]",
                                 cmdSub.getTenant(), cmdSub.getDeviceId(), subscription.topicName(),
                                 subscription.qualityOfService(), t);
                         return Future.failedFuture(t);
@@ -696,17 +699,17 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
             if (cmdSub == null) {
                 final Map<String, Object> items = new HashMap<>(2);
                 items.put(Fields.EVENT, "ignoring unsupported topic filter");
-                items.put("filter", topic);
+                items.put(KEY_TOPIC_FILTER, topic);
                 span.log(items);
-                LOG.debug("ignoring unsubscribe request for unsupported topic filter [{}]", topic);
+                log.debug("ignoring unsubscribe request for unsupported topic filter [{}]", topic);
             } else {
                 final String tenantId = cmdSub.getTenant();
                 final String deviceId = cmdSub.getDeviceId();
                 final Map<String, Object> items = new HashMap<>(2);
                 items.put(Fields.EVENT, "unsubscribing device from topic");
-                items.put("filter", topic);
+                items.put(KEY_TOPIC_FILTER, topic);
                 span.log(items);
-                LOG.debug("unsubscribing device [tenant-id: {}, device-id: {}] from topic [{}]",
+                log.debug("unsubscribing device [tenant-id: {}, device-id: {}] from topic [{}]",
                         tenantId, deviceId, topic);
                 cmdHandler.removeSubscription(topic, (tenant, device) -> {
                     final Span closeHandlerSpan = newSpan("Send Disconnected Event", endpoint, authenticatedDevice,
@@ -728,47 +731,51 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
         // the default value of the CommandConnection will be used
         final long livenessCheckInterval = (long) mqttEndpoint.keepAliveTimeSeconds() * 1000 / 2;
 
-        return getCommandConsumerFactory().createCommandConsumer(
-                sub.getTenant(),
-                sub.getDeviceId(),
-                commandContext -> {
+        final Handler<CommandContext> commandHandler = commandContext -> {
 
-                    Tags.COMPONENT.set(commandContext.getCurrentSpan(), getTypeName());
-                    final Sample timer = metrics.startTimer();
-                    final Command command = commandContext.getCommand();
-                    final Future<TenantObject> tenantTracker = getTenantConfiguration(sub.getTenant(),
-                            commandContext.getTracingContext());
+            Tags.COMPONENT.set(commandContext.getCurrentSpan(), getTypeName());
+            final Sample timer = metrics.startTimer();
+            final Command command = commandContext.getCommand();
+            final Future<TenantObject> tenantTracker = getTenantConfiguration(sub.getTenant(),
+                    commandContext.getTracingContext());
 
-                    tenantTracker.compose(tenantObject -> {
-                        if (!command.isValid()) {
-                            return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST,
-                                    "malformed command message"));
-                        }
-                        return checkMessageLimit(tenantObject, command.getPayloadSize());
-                    }).compose(success -> {
-                        addMicrometerSample(commandContext, timer);
-                        onCommandReceived(tenantTracker.result(), mqttEndpoint, sub, commandContext,
-                                cmdHandler);
-                        return Future.succeededFuture();
-                    }).otherwise(failure -> {
-                        if (failure instanceof ClientErrorException) {
-                            // issue credit so that application(s) can send the next command
-                            commandContext.reject(getErrorCondition(failure), 1);
-                        } else {
-                            commandContext.release(1);
-                        }
-                        metrics.reportCommand(
-                                command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
-                                sub.getTenant(),
-                                tenantTracker.result(),
-                                ProcessingOutcome.from(failure),
-                                command.getPayloadSize(),
-                                timer);
-                        return null;
-                    });
-                },
-                remoteClose -> {},
-                livenessCheckInterval);
+            tenantTracker.compose(tenantObject -> {
+                if (!command.isValid()) {
+                    return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_BAD_REQUEST,
+                            "malformed command message"));
+                }
+                return checkMessageLimit(tenantObject, command.getPayloadSize());
+            }).compose(success -> {
+                addMicrometerSample(commandContext, timer);
+                onCommandReceived(tenantTracker.result(), mqttEndpoint, sub, commandContext,
+                        cmdHandler);
+                return Future.succeededFuture();
+            }).otherwise(failure -> {
+                if (failure instanceof ClientErrorException) {
+                    // issue credit so that application(s) can send the next command
+                    commandContext.reject(getErrorCondition(failure), 1);
+                } else {
+                    commandContext.release(1);
+                }
+                metrics.reportCommand(
+                        command.isOneWay() ? Direction.ONE_WAY : Direction.REQUEST,
+                        sub.getTenant(),
+                        tenantTracker.result(),
+                        ProcessingOutcome.from(failure),
+                        command.getPayloadSize(),
+                        timer);
+                return null;
+            });
+        };
+        final Handler<Void> remoteCloseHandler = remoteClose -> {};
+        if (sub.isGatewaySubscriptionForSpecificDevice()) {
+            // gateway scenario
+            return getCommandConsumerFactory().createCommandConsumer(sub.getTenant(), sub.getDeviceId(),
+                    sub.getAuthenticatedDeviceId(), commandHandler, remoteCloseHandler, livenessCheckInterval);
+        } else {
+            return getCommandConsumerFactory().createCommandConsumer(sub.getTenant(), sub.getDeviceId(), commandHandler,
+                    remoteCloseHandler, livenessCheckInterval);
+        }
     }
 
     void handlePublishedMessage(final MqttContext context) {
@@ -1019,7 +1026,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
             try {
                 status = Integer.parseInt(addressPath[CommandConstants.TOPIC_POSITION_RESPONSE_STATUS]);
             } catch (final NumberFormatException e) {
-                LOG.trace("got invalid status code [{}] [tenant-id: {}, device-id: {}]",
+                log.trace("got invalid status code [{}] [tenant-id: {}, device-id: {}]",
                         addressPath[CommandConstants.TOPIC_POSITION_RESPONSE_STATUS], targetAddress.getTenantId(), targetAddress.getResourceId());
             }
             if (status != null) {
@@ -1062,7 +1069,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 .compose(ok -> sendCommandResponse(targetAddress.getTenantId(), commandResponseTracker.result(),
                         currentSpan.context()))
                 .compose(delivery -> {
-                    LOG.trace("successfully forwarded command response from device [tenant-id: {}, device-id: {}]",
+                    log.trace("successfully forwarded command response from device [tenant-id: {}, device-id: {}]",
                             targetAddress.getTenantId(), targetAddress.getResourceId());
                     metrics.reportCommand(
                             Direction.RESPONSE,
@@ -1130,7 +1137,8 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                     payload,
                     tenantObject,
                     tokenTracker.result(),
-                    null);
+                    null,
+                    EndpointType.EVENT.equals(endpoint) ? getTimeToLive(ctx.propertyBag()) : null);
 
             addRetainAnnotation(ctx, downstreamMessage, currentSpan);
             customizeDownstreamMessage(downstreamMessage, ctx);
@@ -1142,7 +1150,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
             }
         }).compose(delivery -> {
 
-            LOG.trace("successfully processed message [topic: {}, QoS: {}] from device [tenantId: {}, deviceId: {}]",
+            log.trace("successfully processed message [topic: {}, QoS: {}] from device [tenantId: {}, deviceId: {}]",
                     ctx.message().topicName(), ctx.message().qosLevel(), tenantObject.getTenantId(), deviceId);
             // check that the remote MQTT client is still connected before sending PUBACK
             if (ctx.isAtLeastOnce() && ctx.deviceEndpoint().isConnected()) {
@@ -1156,10 +1164,10 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
 
             if (ClientErrorException.class.isInstance(t)) {
                 final ClientErrorException e = (ClientErrorException) t;
-                LOG.debug("cannot process message [endpoint: {}] from device [tenantId: {}, deviceId: {}]: {} - {}",
+                log.debug("cannot process message [endpoint: {}] from device [tenantId: {}, deviceId: {}]: {} - {}",
                         endpoint, tenantObject.getTenantId(), deviceId, e.getErrorCode(), e.getMessage());
             } else {
-                LOG.debug("cannot process message [endpoint: {}] from device [tenantId: {}, deviceId: {}]",
+                log.debug("cannot process message [endpoint: {}] from device [tenantId: {}, deviceId: {}]",
                         endpoint, tenantObject.getTenantId(), deviceId, t);
             }
             TracingHelper.logError(currentSpan, t);
@@ -1195,18 +1203,18 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
         });
         sendDisconnectedEvent(endpoint.clientIdentifier(), authenticatedDevice);
         if (authenticatedDevice == null) {
-            LOG.debug("connection to anonymous device [clientId: {}] closed", endpoint.clientIdentifier());
+            log.debug("connection to anonymous device [clientId: {}] closed", endpoint.clientIdentifier());
             metrics.decrementUnauthenticatedConnections();
         } else {
-            LOG.debug("connection to device [tenant-id: {}, device-id: {}] closed",
+            log.debug("connection to device [tenant-id: {}, device-id: {}] closed",
                     authenticatedDevice.getTenantId(), authenticatedDevice.getDeviceId());
             metrics.decrementConnections(authenticatedDevice.getTenantId());
         }
         if (endpoint.isConnected()) {
-            LOG.debug("closing connection with client [client ID: {}]", endpoint.clientIdentifier());
+            log.debug("closing connection with client [client ID: {}]", endpoint.clientIdentifier());
             endpoint.close();
         } else {
-            LOG.trace("client has already closed connection");
+            log.trace("client has already closed connection");
         }
         span.finish();
     }
@@ -1349,22 +1357,31 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
 
         TracingHelper.TAG_CLIENT_ID.set(commandContext.getCurrentSpan(), endpoint.clientIdentifier());
         final Command command = commandContext.getCommand();
-        // example: control/DEFAULT_TENANT/4711/req/xyz/light
-        // one-way commands have an empty requestId, like control/DEFAULT_TENANT/4711/req//light
-        final String commandRequestId = (command.isOneWay() ? "" : command.getRequestId());
+
+        // build topic string; examples:
+        // command///req/xyz/light (authenticated device)
+        // command///req//light (authenticated device, one-way)
+        // command/DEFAULT_TENANT/4711/req/xyz/light (unauthenticated device)
+        // command//4712/req/xyz/light (authenticated gateway)
+
+        final String topicTenantId = subscription.isAuthenticated() ? "" : subscription.getTenant();
+        final String topicDeviceId = command.isTargetedAtGateway() ? command.getOriginalDeviceId()
+                : subscription.isAuthenticated() ? "" : subscription.getDeviceId();
+        final String topicCommandRequestId = command.isOneWay() ? "" : command.getRequestId();
+
         final String topic = String.format("%s/%s/%s/%s/%s/%s",
-                subscription.getEndpoint(),
-                // no need to include tenant and device ID in topic
-                // if device is authenticated,
-                // i.e. publish to control///req/xyz/light
-                subscription.isAuthenticated() ? "" : subscription.getTenant(),
-                subscription.isAuthenticated() ? "" : subscription.getDeviceId(),
-                subscription.getRequestPart(),
-                commandRequestId,
-                command.getName());
-        LOG.debug("Publishing command to device [tenant-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
-                subscription.getTenant(), subscription.getDeviceId(), subscription.getClientId(),
-                subscription.getQos());
+                subscription.getEndpoint(), topicTenantId, topicDeviceId, subscription.getRequestPart(),
+                topicCommandRequestId, command.getName());
+
+        if (command.isTargetedAtGateway()) {
+            log.debug("Publishing command to gateway [tenant-id: {}, gateway-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
+                    subscription.getTenant(), subscription.getDeviceId(), command.getOriginalDeviceId(),
+                    subscription.getClientId(), subscription.getQos());
+        } else {
+            log.debug("Publishing command to device [tenant-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
+                    subscription.getTenant(), subscription.getDeviceId(), subscription.getClientId(),
+                    subscription.getQos());
+        }
         final Map<String, String> items = new HashMap<>(3);
         items.put(Fields.EVENT, "Publishing command to device");
         items.put(TracingHelper.TAG_CLIENT_ID.getKey(), subscription.getClientId());
@@ -1380,7 +1397,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                     afterCommandPublished(tenantObject, subscription, commandContext);
                 }
             } else {
-                LOG.debug(
+                log.debug(
                         "Error publishing command to device [tenant-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
                         subscription.getTenant(), subscription.getDeviceId(), endpoint.clientIdentifier(),
                         subscription.getQos(),
@@ -1398,6 +1415,30 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
         });
     }
 
+    /**
+     * Gets the <em>time-to-live</em> duration from the given property bag object.
+     *
+     * @param propertyBag The property bag object.
+     * @return The <em>time-to-live</em> duration or {@code null} if
+     * <ul>
+     *     <li>the given property bag object is {@code null.}</li>
+     *     <li>no property with id {@link org.eclipse.hono.util.Constants#HEADER_TIME_TO_LIVE} exists.</li>
+     *     <li>the contained value cannot be parsed as a Long.</li>
+     *     <li>the contained value is negative.</li>
+     * </ul>
+     */
+    protected final Duration getTimeToLive(final PropertyBag propertyBag) {
+        try {
+            return Optional.ofNullable(propertyBag)
+                    .map(propBag -> propBag.getProperty(Constants.HEADER_TIME_TO_LIVE))
+                    .map(Long::parseLong)
+                    .map(ttl -> ttl < 0 ? null : Duration.ofSeconds(ttl))
+                    .orElse(null);
+        } catch (final NumberFormatException e) {
+            return null;
+        }
+    }
+
     private void afterCommandPublished(
             final TenantObject tenantObject,
             final CommandSubscription subscription,
@@ -1410,7 +1451,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 ProcessingOutcome.FORWARDED,
                 commandContext.getCommand().getPayloadSize(),
                 getMicrometerSample(commandContext));
-        LOG.debug("Published command to device [tenant-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
+        log.debug("Published command to device [tenant-id: {}, device-id: {}, MQTT client-id: {}, QoS: {}]",
                 subscription.getTenant(), subscription.getDeviceId(), subscription.getClientId(),
                 subscription.getQos());
         final Map<String, String> items = new HashMap<>(4);
@@ -1440,7 +1481,7 @@ public abstract class AbstractVertxBasedMqttProtocolAdapter<T extends MqttProtoc
                 .all(telemetrySender, eventSender)
                 .compose(ok -> {
                     currentSpan.log("opened downstream links");
-                    LOG.debug(
+                    log.debug(
                             "providently opened downstream links [credit telemetry: {}, credit event: {}] for tenant [{}]",
                             telemetrySender.result().getCredit(), eventSender.result().getCredit(),
                             authenticatedDevice.getTenantId());
